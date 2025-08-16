@@ -1,0 +1,16 @@
+# Node
+node_modules/
+.next/
+out/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# CDK
+cdk.out/
+
+# OS/editor
+.DS_Store
+.env

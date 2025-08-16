@@ -1,0 +1,8 @@
+[tool.black]
+line-length = 100
+
+[tool.isort]
+profile = "black"
+
+[tool.pyright]
+pythonVersion = "3.11"
