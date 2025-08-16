@@ -19,9 +19,13 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     sources = []
     for doc_id in document_ids:
         key = f"{event.get('userId','anon')}/{doc_id}.pdf"
-        # We won't actually fetch; just construct an S3 URL key for the stub
-        object_url = f"s3://{uploads_bucket}/{key}"
-        parsed = llama_parse.parse_pdf_from_s3_object_url(object_url)
+        # Download the first ~5MB (or full) to pass to LlamaParse client
+        try:
+            obj = s3.get_object(Bucket=uploads_bucket, Key=key)
+            pdf_bytes = obj["Body"].read()
+            parsed = llama_parse.parse_pdf_bytes(pdf_bytes, filename=f"{doc_id}.pdf")
+        except Exception:
+            parsed = llama_parse.parse_pdf_bytes(b"", filename=f"{doc_id}.pdf")
         parsed_docs.append({"documentId": doc_id, "parsed": parsed})
         sources.append({"documentId": doc_id, "pages": [1]})
 
