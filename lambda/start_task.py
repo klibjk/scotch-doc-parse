@@ -16,6 +16,7 @@ SFN_ARN = os.environ.get("SFN_ARN", "")
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     body = json.loads(event.get("body" or "{}"))
     prompt = body.get("prompt") or ""
+    document_ids = body.get("documentIds") or []
     user_id = body.get("userId") or "anon"
     session_id = body.get("sessionId") or f"sess_{int(time.time()*1000)}"
 
@@ -32,6 +33,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             "prompt": prompt,
             "createdAt": created_at,
             "userId": user_id,
+            "docRefs": document_ids,
         }
     )
 
@@ -43,6 +45,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             "createdAt": created_at,
             "userId": user_id,
             "sessionId": session_id,
+            "documentIds": document_ids,
         }
         try:
             sfn.start_execution(stateMachineArn=SFN_ARN, input=json.dumps(input_obj))
