@@ -27,5 +27,6 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
     return {
         "statusCode": 200,
+        "headers": {"Access-Control-Allow-Origin": "*"},
         "body": json.dumps({"uploadUrl": url, "documentId": document_id, "expiresIn": 900}),
     }

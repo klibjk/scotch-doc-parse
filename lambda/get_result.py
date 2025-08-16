@@ -14,10 +14,10 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     task_id = params.get("taskId") if isinstance(params, dict) else None
 
     if not task_id:
-        return {"statusCode": 400, "body": json.dumps({"message": "taskId is required"})}
+        return {"statusCode": 400, "headers": {"Access-Control-Allow-Origin": "*"}, "body": json.dumps({"message": "taskId is required"})}
 
     item = tasks_table.get_item(Key={"taskId": task_id}).get("Item")
     if not item:
-        return {"statusCode": 404, "body": json.dumps({"message": "Not found"})}
+        return {"statusCode": 404, "headers": {"Access-Control-Allow-Origin": "*"}, "body": json.dumps({"message": "Not found"})}
 
-    return {"statusCode": 200, "body": json.dumps({"taskId": task_id, "status": item.get("status"), "result": item.get("result"), "error": item.get("error")})}
+    return {"statusCode": 200, "headers": {"Access-Control-Allow-Origin": "*"}, "body": json.dumps({"taskId": task_id, "status": item.get("status"), "result": item.get("result"), "error": item.get("error")})}

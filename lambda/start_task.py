@@ -20,7 +20,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     session_id = body.get("sessionId") or f"sess_{int(time.time()*1000)}"
 
     if not prompt:
-        return {"statusCode": 400, "body": json.dumps({"message": "prompt is required"})}
+        return {"statusCode": 400, "headers": {"Access-Control-Allow-Origin": "*"}, "body": json.dumps({"message": "prompt is required"})}
 
     task_id = f"task_{int(time.time()*1000)}"
     created_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -54,6 +54,5 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 ExpressionAttributeNames={"#status": "status", "#error": "error"},
                 ExpressionAttributeValues={":s": "FAILED", ":e": str(exc)},
             )
-            return {"statusCode": 500, "body": json.dumps({"message": "Failed to start task"})}
-
-    return {"statusCode": 200, "body": json.dumps({"taskId": task_id, "sessionId": session_id})}
+            return {"statusCode": 500, "headers": {"Access-Control-Allow-Origin": "*"}, "body": json.dumps({"message": "Failed to start task"})}
+    return {"statusCode": 200, "headers": {"Access-Control-Allow-Origin": "*"}, "body": json.dumps({"taskId": task_id, "sessionId": session_id})}

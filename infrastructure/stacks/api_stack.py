@@ -154,7 +154,15 @@ class ApiStack(Stack):
         start_task_fn.add_environment("SFN_ARN", state_machine.state_machine_arn)
 
         # API Gateway
-        api = apigw.RestApi(self, "DocChatApi")
+        api = apigw.RestApi(
+            self,
+            "DocChatApi",
+            default_cors_preflight_options=apigw.CorsOptions(
+                allow_origins=apigw.Cors.ALL_ORIGINS,
+                allow_methods=apigw.Cors.ALL_METHODS,
+                allow_headers=["*"]
+            ),
+        )
 
         agent_task = api.root.add_resource("agent-task")
         agent_task.add_method(
