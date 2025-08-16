@@ -104,6 +104,7 @@ class ApiStack(Stack):
             "InvokeBedrockAgent",
             lambda_function=bedrock_agent_fn,
             payload_response_only=True,
+            result_path="$.agent",
             timeout=Duration.seconds(120),
         )
         update_result = tasks.DynamoUpdateItem(
@@ -120,9 +121,9 @@ class ApiStack(Stack):
             },
             expression_attribute_values={
                 ":c": tasks.DynamoAttributeValue.from_string("COMPLETED"),
-                ":r": tasks.DynamoAttributeValue.from_string(sfn.JsonPath.string_at("$.agentResult")),
-                ":t": tasks.DynamoAttributeValue.from_string(sfn.JsonPath.string_at("$.completedAt")),
-                ":s": tasks.DynamoAttributeValue.from_string(sfn.JsonPath.string_at("$.sessionId")),
+                ":r": tasks.DynamoAttributeValue.from_string(sfn.JsonPath.string_at("$.agent.agentResult")),
+                ":t": tasks.DynamoAttributeValue.from_string(sfn.JsonPath.string_at("$.agent.completedAt")),
+                ":s": tasks.DynamoAttributeValue.from_string(sfn.JsonPath.string_at("$.agent.sessionId")),
             },
         )
         handle_error = tasks.DynamoUpdateItem(
@@ -138,16 +139,19 @@ class ApiStack(Stack):
             },
         )
 
-        definition = invoke_agent.next(update_result)
+        # On error, write FAILED via handle_error; on success continue to update_result
+        definition = invoke_agent.add_catch(handle_error, result_path="$.error").next(update_result)
 
         state_machine = sfn.StateMachine(
             self,
             "AgentStateMachine",
-            definition_body=sfn.DefinitionBody.from_chainable(
-                definition.add_catch(handler=handle_error)
-            ),
+            definition_body=sfn.DefinitionBody.from_chainable(definition),
             timeout=Duration.minutes(5),
         )
+
+        # Allow StartTask to know and start the state machine
+        state_machine.grant_start_execution(start_task_fn)
+        start_task_fn.add_environment("SFN_ARN", state_machine.state_machine_arn)
 
         # API Gateway
         api = apigw.RestApi(self, "DocChatApi")

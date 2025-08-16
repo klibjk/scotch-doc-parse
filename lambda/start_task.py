@@ -4,10 +4,13 @@ import time
 from typing import Any, Dict
 
 import boto3
+from botocore.config import Config
 
 
+sfn = boto3.client("stepfunctions", config=Config(retries={"max_attempts": 3}))
 dynamodb = boto3.resource("dynamodb")
 tasks_table = dynamodb.Table(os.environ["AGENT_TASKS_TABLE"])
+SFN_ARN = os.environ.get("SFN_ARN", "")
 
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
@@ -32,6 +35,25 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         }
     )
 
-    # In v1, a Step Functions execution would be started here
+    # Start Step Functions execution (fire-and-forget)
+    if SFN_ARN:
+        input_obj = {
+            "taskId": task_id,
+            "prompt": prompt,
+            "createdAt": created_at,
+            "userId": user_id,
+            "sessionId": session_id,
+        }
+        try:
+            sfn.start_execution(stateMachineArn=SFN_ARN, input=json.dumps(input_obj))
+        except Exception as exc:
+            # Mark task as failed if we cannot start the execution
+            tasks_table.update_item(
+                Key={"taskId": task_id},
+                UpdateExpression="SET #status=:s, #error=:e",
+                ExpressionAttributeNames={"#status": "status", "#error": "error"},
+                ExpressionAttributeValues={":s": "FAILED", ":e": str(exc)},
+            )
+            return {"statusCode": 500, "body": json.dumps({"message": "Failed to start task"})}
 
     return {"statusCode": 200, "body": json.dumps({"taskId": task_id, "sessionId": session_id})}
