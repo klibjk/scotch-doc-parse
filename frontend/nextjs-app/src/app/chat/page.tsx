@@ -1,8 +1,9 @@
 "use client";
 import { useState } from "react";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
 
 async function startTask(prompt: string, documentIds: string[]) {
-  const res = await fetch("/api/agent-task", {
+  const res = await fetch(`${API_BASE.replace(/\/$/, '')}/agent-task`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ prompt, documentIds, userId: "demo" })
@@ -12,7 +13,7 @@ async function startTask(prompt: string, documentIds: string[]) {
 }
 
 async function pollTask(taskId: string) {
-  const res = await fetch(`/api/agent-task?taskId=${encodeURIComponent(taskId)}`);
+  const res = await fetch(`${API_BASE.replace(/\/$/, '')}/agent-task?taskId=${encodeURIComponent(taskId)}`);
   if (!res.ok) throw new Error("Failed to get task");
   return res.json();
 }

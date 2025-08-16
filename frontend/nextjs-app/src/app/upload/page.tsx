@@ -1,5 +1,6 @@
 "use client";
 import { useState } from "react";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
 
 export default function UploadPage() {
   const [file, setFile] = useState<File | null>(null);
@@ -8,7 +9,7 @@ export default function UploadPage() {
 
   async function requestUpload(file: File) {
     setStatus("Requesting presigned URL…");
-    const res = await fetch("/api/upload-request", {
+    const res = await fetch(`${API_BASE.replace(/\/$/, '')}/upload-request`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ filename: file.name, contentType: file.type || "application/pdf", userId: "demo" }),

@@ -9,6 +9,7 @@ from aws_cdk import (
     aws_s3 as s3,
     aws_stepfunctions as sfn,
     aws_stepfunctions_tasks as tasks,
+    CfnOutput,
 )
 from constructs import Construct
 
@@ -181,3 +182,6 @@ class ApiStack(Stack):
         )
 
         # Outputs that frontend might need would be added here in future
+        CfnOutput(self, "ApiUrl", value=api.url)
+        CfnOutput(self, "UploadsBucketName", value=uploads_bucket.bucket_name)
+        CfnOutput(self, "ReportsBucketName", value=reports_bucket.bucket_name)

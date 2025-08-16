@@ -5,6 +5,7 @@ from aws_cdk import (
     aws_s3 as s3,
     aws_cloudfront as cloudfront,
     aws_cloudfront_origins as origins,
+    CfnOutput,
 )
 from constructs import Construct
 
@@ -34,4 +35,5 @@ class FrontendStack(Stack):
         )
 
         # Expose bucket name and distribution domain for use by CI/deploys
-        # In a fuller implementation, add CfnOutput constructs
+        CfnOutput(self, "SiteBucketName", value=site_bucket.bucket_name)
+        CfnOutput(self, "DistributionDomainName", value=distribution.domain_name)
