@@ -7,6 +7,7 @@ from aws_cdk import (
     aws_cloudfront_origins as origins,
     CfnOutput,
 )
+from aws_cdk import aws_s3_deployment as s3deploy
 from constructs import Construct
 
 
@@ -32,6 +33,16 @@ class FrontendStack(Stack):
                 origin=origins.S3Origin(site_bucket),
                 viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
             ),
+        )
+
+        # Deploy pre-built static site from frontend/nextjs-app/out
+        s3deploy.BucketDeployment(
+            self,
+            "DeployWebsite",
+            destination_bucket=site_bucket,
+            sources=[s3deploy.Source.asset("frontend/nextjs-app/out")],
+            distribution=distribution,
+            distribution_paths=["/*"],
         )
 
         # Expose bucket name and distribution domain for use by CI/deploys
