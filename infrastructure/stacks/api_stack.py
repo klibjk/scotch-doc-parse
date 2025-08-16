@@ -51,6 +51,8 @@ class ApiStack(Stack):
             "AGENT_TASKS_TABLE": tasks_table.table_name,
             "UPLOADS_BUCKET": uploads_bucket.bucket_name,
             "REPORTS_BUCKET": reports_bucket.bucket_name,
+            # Secrets Manager ID where the LlamaParse API key is stored
+            "LLAMAPARSE_SECRET_ID": "/scotch-doc-parse/llamaparse",
         }
 
         start_task_fn = _lambda.Function(
@@ -98,6 +100,10 @@ class ApiStack(Stack):
         uploads_bucket.grant_read_write(bedrock_agent_fn)
         uploads_bucket.grant_read_write(presign_fn)
         reports_bucket.grant_read_write(bedrock_agent_fn)
+        # Allow Lambdas to read LlamaParse secret
+        from aws_cdk import aws_secretsmanager as secrets
+        llama_secret = secrets.Secret.from_secret_name_v2(self, "LlamaParseSecret", "/scotch-doc-parse/llamaparse")
+        llama_secret.grant_read(bedrock_agent_fn)
 
         # Step Functions state machine (skeleton)
         invoke_agent = tasks.LambdaInvoke(
