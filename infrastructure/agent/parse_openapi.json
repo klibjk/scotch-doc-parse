@@ -1,0 +1,57 @@
+{
+  "openapi": "3.0.1",
+  "info": {
+    "title": "Scotch Doc Parse Tools",
+    "version": "1.0.0",
+    "description": "Action group for parsing PDFs by documentId"
+  },
+  "paths": {
+    "/parse_pdf": {
+      "post": {
+        "operationId": "parse_pdf",
+        "description": "Parse a PDF stored in S3 uploads bucket using documentId and userId",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "documentId": { "type": "string", "description": "The documentId without extension" },
+                  "userId": { "type": "string", "description": "The user identifier namespace for the object key" }
+                },
+                "required": ["documentId", "userId"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "text": { "type": "string" },
+                    "pages": {
+                      "type": "array",
+                      "items": { "type": "object", "additionalProperties": true }
+                    },
+                    "tables": {
+                      "type": "array",
+                      "items": { "type": "object", "additionalProperties": true }
+                    },
+                    "metadata": { "type": "object", "additionalProperties": true }
+                  },
+                  "required": ["text", "pages", "tables", "metadata"]
+                }
+              }
+            }
+          },
+          "default": { "description": "Error" }
+        }
+      }
+    }
+  }
+}

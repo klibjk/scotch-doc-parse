@@ -18,11 +18,32 @@ class FrontendStack(Stack):
         site_bucket = s3.Bucket(
             self,
             "SiteBucket",
-            website_index_document="index.html",
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
             enforce_ssl=True,
             removal_policy=RemovalPolicy.DESTROY,
             auto_delete_objects=True,
+        )
+
+        # Use S3Origin with Origin Access Identity so CloudFront can read from private bucket
+        oai = cloudfront.OriginAccessIdentity(self, "OAI")
+        # CloudFront Function to rewrite extension-less URLs to .html and add index.html for folders
+        url_rewrite_fn = cloudfront.Function(
+            self,
+            "RewriteToHtml",
+            code=cloudfront.FunctionCode.from_inline(
+                """
+function handler(event) {
+  var request = event.request;
+  var uri = request.uri;
+  if (uri.endsWith('/')) {
+    request.uri = uri + 'index.html';
+  } else if (!uri.includes('.')) {
+    request.uri = uri + '.html';
+  }
+  return request;
+}
+                """
+            ),
         )
 
         distribution = cloudfront.Distribution(
@@ -30,10 +51,13 @@ class FrontendStack(Stack):
             "SiteDistribution",
             default_root_object="index.html",
             default_behavior=cloudfront.BehaviorOptions(
-                origin=origins.S3Origin(site_bucket),
+                origin=origins.S3Origin(site_bucket, origin_access_identity=oai),
                 viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                function_associations=[cloudfront.FunctionAssociation(function=url_rewrite_fn, event_type=cloudfront.FunctionEventType.VIEWER_REQUEST)],
             ),
         )
+        # Grant CloudFront OAI read access to the bucket
+        site_bucket.grant_read(oai.grant_principal)
 
         # Deploy pre-built static site from frontend/nextjs-app/out
         s3deploy.BucketDeployment(

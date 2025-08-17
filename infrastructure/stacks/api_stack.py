@@ -11,6 +11,10 @@ from aws_cdk import (
     aws_stepfunctions_tasks as tasks,
     CfnOutput,
 )
+from aws_cdk import aws_iam as iam
+from aws_cdk import aws_bedrock as bedrock
+from aws_cdk import aws_s3_deployment as s3deploy
+from pathlib import Path
 from constructs import Construct
 
 
@@ -26,6 +30,14 @@ class ApiStack(Stack):
             enforce_ssl=True,
             removal_policy=RemovalPolicy.DESTROY,
             auto_delete_objects=True,
+        )
+        # Allow browser uploads via presigned URLs (CORS for PUT)
+        uploads_bucket.add_cors_rule(
+            allowed_methods=[s3.HttpMethods.PUT, s3.HttpMethods.GET, s3.HttpMethods.HEAD],
+            allowed_origins=["*"],
+            allowed_headers=["*"],
+            exposed_headers=["ETag"],
+            max_age=3000,
         )
         reports_bucket = s3.Bucket(
             self,
@@ -53,6 +65,7 @@ class ApiStack(Stack):
             "REPORTS_BUCKET": reports_bucket.bucket_name,
             # Secrets Manager ID where the LlamaParse API key is stored
             "LLAMAPARSE_SECRET_ID": "/scotch-doc-parse/llamaparse",
+            "BEDROCK_MODEL_ID": "anthropic.claude-3-5-sonnet-20240620-v1:0",
         }
 
         start_task_fn = _lambda.Function(
@@ -92,6 +105,24 @@ class ApiStack(Stack):
             environment=common_env,
         )
 
+        # Secrets
+        from aws_cdk import aws_secretsmanager as secrets
+        llama_secret = secrets.Secret.from_secret_name_v2(self, "LlamaParseSecret", "/scotch-doc-parse/llamaparse")
+
+        # Action Group Lambda for Bedrock Agent (parse_pdf)
+        agent_tools_env = dict(common_env)
+        parse_tool_fn = _lambda.Function(
+            self,
+            "AgentParsePdfTool",
+            runtime=_lambda.Runtime.PYTHON_3_11,
+            handler="agent_tools.parse_pdf.handler",
+            code=_lambda.Code.from_asset("lambda"),
+            timeout=Duration.seconds(60),
+            environment=agent_tools_env,
+        )
+        uploads_bucket.grant_read(parse_tool_fn)
+        llama_secret.grant_read(parse_tool_fn)
+
         # Permissions
         tasks_table.grant_read_write_data(start_task_fn)
         tasks_table.grant_read_data(get_result_fn)
@@ -101,9 +132,19 @@ class ApiStack(Stack):
         uploads_bucket.grant_read_write(presign_fn)
         reports_bucket.grant_read_write(bedrock_agent_fn)
         # Allow Lambdas to read LlamaParse secret
-        from aws_cdk import aws_secretsmanager as secrets
-        llama_secret = secrets.Secret.from_secret_name_v2(self, "LlamaParseSecret", "/scotch-doc-parse/llamaparse")
         llama_secret.grant_read(bedrock_agent_fn)
+        # Allow invoking Bedrock models directly
+        bedrock_agent_fn.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "bedrock:InvokeModel",
+                    "bedrock:Converse",
+                    "bedrock:InvokeModelWithResponseStream",
+                    "bedrock:InvokeAgent",
+                ],
+                resources=["*"],
+            )
+        )
 
         # Step Functions state machine (skeleton)
         invoke_agent = tasks.LambdaInvoke(
@@ -191,3 +232,80 @@ class ApiStack(Stack):
         CfnOutput(self, "ApiUrl", value=api.url)
         CfnOutput(self, "UploadsBucketName", value=uploads_bucket.bucket_name)
         CfnOutput(self, "ReportsBucketName", value=reports_bucket.bucket_name)
+
+        # Grant Bedrock to invoke tool lambda (when Agent is configured)
+        parse_tool_fn.add_permission(
+            "AllowBedrockInvokeTool",
+            principal=iam.ServicePrincipal("bedrock.amazonaws.com"),
+            action="lambda:InvokeFunction"
+        )
+
+        # Load OpenAPI schema payload for inline embedding (works even if S3 schema location type is unavailable)
+        openapi_payload = Path("infrastructure/agent/parse_openapi.json").read_text()
+
+        # IAM Role for Bedrock Agent
+        agent_role = iam.Role(
+            self,
+            "DocAgentRole",
+            assumed_by=iam.ServicePrincipal("bedrock.amazonaws.com"),
+            description="Execution role for Bedrock Agent",
+            managed_policies=[iam.ManagedPolicy.from_aws_managed_policy_name("service-role/AWSLambdaRole")],
+        )
+        # Allow Agent to read schema from S3
+        reports_bucket.grant_read(agent_role)
+
+        # Define Bedrock Agent with inline action group using the AgentActionGroupProperty
+        agent = bedrock.CfnAgent(
+            self,
+            "DocAgent",
+            agent_name="ScotchDocAgent",
+            # Use versioned model id per account setup
+            foundation_model="anthropic.claude-3-5-sonnet-20240620-v1:0",
+            instruction="You are a document analysis assistant. Use the action group tools to parse PDFs and answer questions grounded in parsed content.",
+            idle_session_ttl_in_seconds=300,
+            description="Parses and answers questions about uploaded PDFs",
+            agent_resource_role_arn=agent_role.role_arn,
+            action_groups=[
+                bedrock.CfnAgent.AgentActionGroupProperty(
+                    action_group_name="DocParseTools",
+                    action_group_executor=bedrock.CfnAgent.ActionGroupExecutorProperty(
+                        lambda_=parse_tool_fn.function_arn
+                    ),
+                    api_schema=bedrock.CfnAgent.APISchemaProperty(payload=openapi_payload),
+                    action_group_state="ENABLED",
+                )
+            ],
+        )
+        agent_alias = bedrock.CfnAgentAlias(
+            self,
+            "DocAgentAlias",
+            agent_alias_name="prod",
+            agent_id=agent.attr_agent_id,
+        )
+        # Pass Agent identifiers to the Lambda via env
+        bedrock_agent_fn.add_environment("BEDROCK_AGENT_ID", agent.attr_agent_id)
+        bedrock_agent_fn.add_environment("BEDROCK_AGENT_ALIAS_ID", agent_alias.attr_agent_alias_id)
+        CfnOutput(self, "BedrockAgentId", value=agent.attr_agent_id)
+        CfnOutput(self, "BedrockAgentAliasId", value=agent_alias.attr_agent_alias_id)
+
+        # Simple Agent chat proxy Lambda (frontend -> Agent)
+        agent_chat_fn = _lambda.Function(
+            self,
+            "AgentChatLambda",
+            runtime=_lambda.Runtime.PYTHON_3_11,
+            handler="agent_chat.handler",
+            code=_lambda.Code.from_asset("lambda"),
+            timeout=Duration.seconds(60),
+            environment={
+                **common_env,
+                "BEDROCK_AGENT_ID": agent.attr_agent_id,
+                "BEDROCK_AGENT_ALIAS_ID": agent_alias.attr_agent_alias_id,
+            },
+        )
+        agent_chat_fn.add_to_role_policy(
+            iam.PolicyStatement(actions=["bedrock:InvokeAgent"], resources=["*"])
+        )
+
+        # API: POST /agent-chat -> AgentChatLambda
+        agent_chat = api.root.add_resource("agent-chat")
+        agent_chat.add_method("POST", apigw.LambdaIntegration(agent_chat_fn))
