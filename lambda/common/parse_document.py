@@ -21,27 +21,17 @@ def parse_pdf_bytes(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
 
 
 def parse_xlsx_bytes(xlsx_bytes: bytes, filename: str) -> Dict[str, Any]:
-    import io
-    import pandas as pd  # type: ignore
-
-    buf = io.BytesIO(xlsx_bytes)
-    sheets = pd.read_excel(buf, sheet_name=None, engine="openpyxl")
-    tables: List[Dict[str, Any]] = []
-    text_parts: List[str] = []
-    for name, df in sheets.items():
-        # Limit rows to keep payload small
-        preview = df.head(50).copy()
-        records = preview.fillna("").to_dict(orient="records")
-        tables.append({"name": str(name), "rows": records})
-        # Add a compact summary line
-        cols = ", ".join(map(str, list(preview.columns)))
-        text_parts.append(f"Sheet {name}: columns {cols} | {len(preview)} rows preview")
-    normalized: Dict[str, Any] = {
+    # Delegate to LlamaParse's XLSX support
+    result = llama_parse.parse_xlsx_bytes(xlsx_bytes, filename=filename)
+    # Normalize to common structure
+    text = result.get("text") or ""
+    tables = result.get("tables") or []
+    metadata = result.get("metadata") or {"title": filename}
+    return {
         "docType": "xlsx",
-        "text": "\n".join(text_parts),
+        "text": text,
         "tables": tables,
-        "metadata": {"sheetNames": [t["name"] for t in tables]},
+        "metadata": metadata,
     }
-    return normalized
 
 

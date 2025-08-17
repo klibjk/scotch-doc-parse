@@ -26,7 +26,9 @@ def _get_llamaparse_api_key() -> Optional[str]:
         return None
     try:
         resp = _secrets_client.get_secret_value(SecretId=secret_id)
-        sec = resp.get("SecretString") or base64.b64decode(resp.get("SecretBinary") or b"").decode("utf-8")
+        sec = resp.get("SecretString") or base64.b64decode(resp.get("SecretBinary") or b"").decode(
+            "utf-8"
+        )
         # Allow both raw key or JSON {"api_key": "..."}
         try:
             data = json.loads(sec)
@@ -37,13 +39,15 @@ def _get_llamaparse_api_key() -> Optional[str]:
         return None
 
 
-def _multipart_form(file_bytes: bytes, filename: str, content_type: str = "application/pdf") -> (bytes, str):
+def _multipart_form(
+    file_bytes: bytes, filename: str, content_type: str = "application/pdf"
+) -> tuple[bytes, str]:
     boundary = f"--------------------------{uuid.uuid4().hex}"
     lines = []
     lines.append(f"--{boundary}\r\n".encode("utf-8"))
     lines.append(
         (
-            f"Content-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
             f"Content-Type: {content_type}\r\n\r\n"
         ).encode("utf-8")
     )
@@ -55,7 +59,13 @@ def _multipart_form(file_bytes: bytes, filename: str, content_type: str = "appli
     return body, content_type_header
 
 
-def _http_request(url: str, method: str = "GET", headers: Optional[Dict[str, str]] = None, data: Optional[bytes] = None, timeout: int = 60) -> (int, bytes):
+def _http_request(
+    url: str,
+    method: str = "GET",
+    headers: Optional[Dict[str, str]] = None,
+    data: Optional[bytes] = None,
+    timeout: int = 60,
+) -> tuple[int, bytes]:
     req = urllib.request.Request(url, method=method)
     if headers:
         for k, v in headers.items():
@@ -64,7 +74,9 @@ def _http_request(url: str, method: str = "GET", headers: Optional[Dict[str, str
         return resp.getcode(), resp.read()
 
 
-def _normalize_result(json_result: Dict[str, Any], text_fallback: Optional[str], filename: str) -> Dict[str, Any]:
+def _normalize_result(
+    json_result: Dict[str, Any], text_fallback: Optional[str], filename: str
+) -> Dict[str, Any]:
     text = text_fallback or json_result.get("text") or ""
     pages = json_result.get("pages") or []
     tables = json_result.get("tables") or []
@@ -81,7 +93,9 @@ def parse_pdf_bytes(pdf_bytes: bytes, filename: str = "document.pdf") -> Dict[st
     If API key is missing or any step fails, returns a stub result.
     """
     api_key = _get_llamaparse_api_key()
-    base_url = os.getenv(LLAMAPARSE_BASE_URL_ENV, "https://api.cloud.llamaindex.ai/api/v1").rstrip("/")
+    base_url = os.getenv(LLAMAPARSE_BASE_URL_ENV, "https://api.cloud.llamaindex.ai/api/v1").rstrip(
+        "/"
+    )
     if not api_key:
         return {
             "text": f"Parsed content for {filename} (stub)",
@@ -99,7 +113,9 @@ def parse_pdf_bytes(pdf_bytes: bytes, filename: str = "document.pdf") -> Dict[st
             "Authorization": f"Bearer {api_key}",
             "Content-Type": content_type,
         }
-        status, data = _http_request(upload_url, method="POST", headers=headers, data=body, timeout=60)
+        status, data = _http_request(
+            upload_url, method="POST", headers=headers, data=body, timeout=60
+        )
         if status // 100 != 2:
             raise RuntimeError(f"Upload failed: HTTP {status}")
         upload_resp = json.loads(data)
@@ -111,10 +127,15 @@ def parse_pdf_bytes(pdf_bytes: bytes, filename: str = "document.pdf") -> Dict[st
         status_url = f"{base_url}/parsing/job/{job_id}"
         start_time = time.time()
         while True:
-            st_code, st_data = _http_request(status_url, method="GET", headers={
-                "Accept": "application/json",
-                "Authorization": f"Bearer {api_key}",
-            }, timeout=30)
+            st_code, st_data = _http_request(
+                status_url,
+                method="GET",
+                headers={
+                    "Accept": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                },
+                timeout=30,
+            )
             if st_code // 100 != 2:
                 raise RuntimeError(f"Status check failed: HTTP {st_code}")
             st_json = json.loads(st_data)
@@ -129,18 +150,28 @@ def parse_pdf_bytes(pdf_bytes: bytes, filename: str = "document.pdf") -> Dict[st
 
         # Step 3: fetch results (json + optional text)
         result_json_url = f"{base_url}/parsing/job/{job_id}/result/json"
-        rj_code, rj_data = _http_request(result_json_url, method="GET", headers={
-            "Accept": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        }, timeout=60)
+        rj_code, rj_data = _http_request(
+            result_json_url,
+            method="GET",
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            },
+            timeout=60,
+        )
         rj_json = json.loads(rj_data) if rj_code // 100 == 2 else {}
 
         text_url = f"{base_url}/parsing/job/{job_id}/result/text"
         try:
-            rt_code, rt_data = _http_request(text_url, method="GET", headers={
-                "Accept": "application/json",
-                "Authorization": f"Bearer {api_key}",
-            }, timeout=60)
+            rt_code, rt_data = _http_request(
+                text_url,
+                method="GET",
+                headers={
+                    "Accept": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                },
+                timeout=60,
+            )
             text_json = json.loads(rt_data) if rt_code // 100 == 2 else {}
             text_value = text_json.get("text") if isinstance(text_json, dict) else None
         except Exception:
@@ -153,6 +184,111 @@ def parse_pdf_bytes(pdf_bytes: bytes, filename: str = "document.pdf") -> Dict[st
         return {
             "text": f"Parsed content for {filename} (stub)",
             "pages": [{"pageNumber": 1, "text": "Example page text (stub)"}],
+            "tables": [],
+            "metadata": {"title": filename},
+        }
+
+
+def parse_xlsx_bytes(xlsx_bytes: bytes, filename: str = "document.xlsx") -> Dict[str, Any]:
+    """Parse XLSX via Llama Cloud Parsing API, mirroring the PDF flow.
+    Returns normalized structure with text/pages/tables/metadata.
+    """
+    api_key = _get_llamaparse_api_key()
+    base_url = os.getenv(LLAMAPARSE_BASE_URL_ENV, "https://api.cloud.llamaindex.ai/api/v1").rstrip(
+        "/"
+    )
+    if not api_key:
+        return {
+            "text": f"Parsed content for {filename} (stub)",
+            "pages": [],
+            "tables": [],
+            "metadata": {"title": filename},
+        }
+
+    try:
+        # Upload XLSX
+        upload_url = f"{base_url}/parsing/upload"
+        body, content_type = _multipart_form(
+            xlsx_bytes,
+            filename,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": content_type,
+        }
+        status, data = _http_request(
+            upload_url, method="POST", headers=headers, data=body, timeout=60
+        )
+        if status // 100 != 2:
+            raise RuntimeError(f"Upload failed: HTTP {status}")
+        upload_resp = json.loads(data)
+        job_id = upload_resp.get("id") or upload_resp.get("job_id")
+        if not job_id:
+            raise RuntimeError("Upload response missing job id")
+
+        # Poll status
+        status_url = f"{base_url}/parsing/job/{job_id}"
+        start_time = time.time()
+        while True:
+            st_code, st_data = _http_request(
+                status_url,
+                method="GET",
+                headers={
+                    "Accept": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                },
+                timeout=30,
+            )
+            if st_code // 100 != 2:
+                raise RuntimeError(f"Status check failed: HTTP {st_code}")
+            st_json = json.loads(st_data)
+            st = (st_json.get("status") or "").upper()
+            if st in ("SUCCESS", "SUCCEEDED", "COMPLETED"):
+                break
+            if st in ("FAILED", "ERROR"):
+                raise RuntimeError(f"Parsing job failed: {st_json}")
+            if time.time() - start_time > 180:
+                raise TimeoutError("Timeout waiting for LlamaParse job to complete")
+            time.sleep(2.0)
+
+        # Fetch generic JSON result (some deployments expose raw_xlsx endpoints as well)
+        result_json_url = f"{base_url}/parsing/job/{job_id}/result/json"
+        rj_code, rj_data = _http_request(
+            result_json_url,
+            method="GET",
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            },
+            timeout=60,
+        )
+        rj_json = json.loads(rj_data) if rj_code // 100 == 2 else {}
+
+        # Optional text synthesis if available
+        text_url = f"{base_url}/parsing/job/{job_id}/result/text"
+        try:
+            rt_code, rt_data = _http_request(
+                text_url,
+                method="GET",
+                headers={
+                    "Accept": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                },
+                timeout=60,
+            )
+            text_json = json.loads(rt_data) if rt_code // 100 == 2 else {}
+            text_value = text_json.get("text") if isinstance(text_json, dict) else None
+        except Exception:
+            text_value = None
+
+        return _normalize_result(rj_json if isinstance(rj_json, dict) else {}, text_value, filename)
+
+    except Exception:
+        return {
+            "text": f"Parsed content for {filename} (stub)",
+            "pages": [],
             "tables": [],
             "metadata": {"title": filename},
         }
