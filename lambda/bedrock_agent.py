@@ -4,7 +4,7 @@ import time
 from typing import Any, Dict, List
 import boto3
 from botocore.config import Config
-from common import llama_parse
+from common import parse_document
 
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
@@ -18,14 +18,35 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     parsed_docs = []
     sources = []
     for doc_id in document_ids:
-        key = f"{event.get('userId','anon')}/{doc_id}.pdf"
-        # Download the first ~5MB (or full) to pass to LlamaParse client
-        try:
-            obj = s3.get_object(Bucket=uploads_bucket, Key=key)
-            pdf_bytes = obj["Body"].read()
-            parsed = llama_parse.parse_pdf_bytes(pdf_bytes, filename=f"{doc_id}.pdf")
-        except Exception:
-            parsed = llama_parse.parse_pdf_bytes(b"", filename=f"{doc_id}.pdf")
+        # Try both pdf and xlsx keys to locate the uploaded object
+        user_prefix = event.get('userId','anon')
+        tried_keys = [
+            f"{user_prefix}/{doc_id}.pdf",
+            f"{user_prefix}/{doc_id}.xlsx",
+        ]
+        obj = None
+        key_used = None
+        for key in tried_keys:
+            try:
+                obj = s3.get_object(Bucket=uploads_bucket, Key=key)
+                key_used = key
+                break
+            except Exception:
+                continue
+        parsed: Dict[str, Any]
+        if obj is not None and key_used is not None:
+            data = obj["Body"].read()
+            if key_used.endswith('.pdf'):
+                parsed = parse_document.parse_pdf_bytes(data, filename=os.path.basename(key_used))
+            elif key_used.endswith('.xlsx'):
+                try:
+                    parsed = parse_document.parse_xlsx_bytes(data, filename=os.path.basename(key_used))
+                except Exception:
+                    parsed = {"docType": "xlsx", "text": "", "tables": [], "metadata": {"error": "xlsx parse failed"}}
+            else:
+                parsed = {"docType": "unknown", "text": "", "tables": [], "metadata": {}}
+        else:
+            parsed = {"docType": "missing", "text": "", "tables": [], "metadata": {"error": "object not found"}}
         parsed_docs.append({"documentId": doc_id, "parsed": parsed})
         sources.append({"documentId": doc_id, "pages": [1]})
 
@@ -34,10 +55,6 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     for doc in parsed_docs:
         parsed = doc.get("parsed", {})
         text = parsed.get("text") or ""
-        if not text and isinstance(parsed.get("pages"), list) and parsed["pages"]:
-            # fallback to first page text
-            first_page = parsed["pages"][0] or {}
-            text = first_page.get("text") or ""
         if text:
             excerpts.append(text.strip())
 
