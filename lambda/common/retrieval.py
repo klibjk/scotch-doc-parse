@@ -1,0 +1,83 @@
+from __future__ import annotations
+
+import json
+from typing import Any, Dict, List, Tuple
+
+import boto3
+from botocore.config import Config
+
+from .embeddings import embed_texts
+
+
+def _cosine_similarity(a: List[float], b: List[float]) -> float:
+    if not a or not b:
+        return 0.0
+    # Ensure same length
+    n = min(len(a), len(b))
+    dot = 0.0
+    na = 0.0
+    nb = 0.0
+    for i in range(n):
+        va = float(a[i])
+        vb = float(b[i])
+        dot += va * vb
+        na += va * va
+        nb += vb * vb
+    if na == 0.0 or nb == 0.0:
+        return 0.0
+    return dot / ((na ** 0.5) * (nb ** 0.5))
+
+
+def retrieve_top_k(
+    prompt: str,
+    user_id: str,
+    document_ids: List[str],
+    reports_bucket: str,
+    top_k: int = 5,
+) -> List[Dict[str, Any]]:
+    """Load embeddings JSONL for the given documents and return top-k chunks by similarity.
+
+    Returns list of { documentId, text, metadata, score } sorted by score desc.
+    """
+    if not prompt or not document_ids:
+        return []
+
+    s3 = boto3.client("s3", config=Config(retries={"max_attempts": 3}))
+    # Embed the prompt once
+    q_vecs = embed_texts([prompt])
+    if not q_vecs:
+        return []
+    q_vec = q_vecs[0]
+
+    candidates: List[Tuple[float, Dict[str, Any]]] = []
+    for doc_id in document_ids:
+        key = f"embeddings/{user_id}/{doc_id}.jsonl"
+        try:
+            obj = s3.get_object(Bucket=reports_bucket, Key=key)
+            body = obj["Body"].read()
+        except Exception:
+            continue
+        for line in body.splitlines():
+            try:
+                rec = json.loads(line.decode("utf-8"))
+            except Exception:
+                continue
+            vec = rec.get("embedding") or []
+            score = _cosine_similarity(q_vec, vec)
+            candidates.append((score, rec))
+
+    if not candidates:
+        return []
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    top = candidates[:top_k]
+    return [
+        {
+            "documentId": r.get("documentId"),
+            "text": r.get("text") or "",
+            "metadata": r.get("metadata") or {},
+            "score": score,
+        }
+        for score, r in top
+    ]
+
+

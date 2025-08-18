@@ -5,6 +5,7 @@ from typing import Any, Dict, List
 import boto3
 from botocore.config import Config
 from common import parse_document
+from common.retrieval import retrieve_top_k
 
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
@@ -68,13 +69,43 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         parsed_docs.append({"documentId": doc_id, "parsed": parsed})
         sources.append({"documentId": doc_id, "pages": [1]})
 
-    # Compose an answer grounded on parsed docs: include excerpts
-    excerpts = []
-    for doc in parsed_docs:
-        parsed = doc.get("parsed", {})
-        text = parsed.get("text") or ""
-        if text:
-            excerpts.append(text.strip())
+    # Try vector retrieval first (if embeddings exist), fall back to raw excerpts
+    reports_bucket = os.environ.get("REPORTS_BUCKET", "")
+    retrieved = []
+    if reports_bucket and document_ids and prompt:
+        try:
+            retrieved = retrieve_top_k(prompt=prompt, user_id=event.get("userId", "anon"), document_ids=document_ids, reports_bucket=reports_bucket, top_k=5)
+        except Exception:
+            retrieved = []
+
+    excerpts: list[str] = []
+    if retrieved:
+        for r in retrieved:
+            txt = r.get("text") or ""
+            meta = r.get("metadata") or {}
+            cite = []
+            if "page" in meta:
+                cite.append(f"p.{meta['page']}")
+            if "sheet" in meta:
+                cite.append(f"sheet {meta['sheet']}")
+            cite_suffix = f" ({' ,'.join(cite)})" if cite else ""
+            if txt:
+                excerpts.append((txt.strip() + cite_suffix)[:1200])
+        # Build sources from retrieved hits
+        sources = []
+        for r in retrieved:
+            meta = r.get("metadata") or {}
+            src = {"documentId": r.get("documentId"), "pages": []}
+            if "page" in meta and isinstance(meta["page"], int):
+                src["pages"].append(meta["page"])
+            sources.append(src)
+    else:
+        # Compose an answer grounded on parsed docs: include excerpts
+        for doc in parsed_docs:
+            parsed = doc.get("parsed", {})
+            text = parsed.get("text") or ""
+            if text:
+                excerpts.append(text.strip())
 
     if excerpts:
         # Limit to a reasonable preview length
