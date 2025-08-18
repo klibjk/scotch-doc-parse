@@ -60,11 +60,38 @@ function handler(event) {
         site_bucket.grant_read(oai.grant_principal)
 
         # Deploy pre-built static site from frontend/nextjs-app/out
+        # 1) Long-cache immutable assets (everything except HTML)
         s3deploy.BucketDeployment(
             self,
-            "DeployWebsite",
+            "DeployWebsiteAssets",
             destination_bucket=site_bucket,
-            sources=[s3deploy.Source.asset("frontend/nextjs-app/out")],
+            sources=[
+                s3deploy.Source.asset(
+                    "frontend/nextjs-app/out",
+                    exclude=["*.html"],
+                )
+            ],
+            cache_control=[
+                s3deploy.CacheControl.from_string("public, max-age=31536000, immutable")
+            ],
+            distribution=distribution,
+            distribution_paths=["/*"],
+        )
+
+        # 2) HTML with no-cache to avoid stale UI
+        s3deploy.BucketDeployment(
+            self,
+            "DeployWebsiteHtml",
+            destination_bucket=site_bucket,
+            sources=[
+                s3deploy.Source.asset(
+                    "frontend/nextjs-app/out",
+                    exclude=["*", "!*.html"],
+                )
+            ],
+            cache_control=[
+                s3deploy.CacheControl.from_string("no-cache, no-store, must-revalidate")
+            ],
             distribution=distribution,
             distribution_paths=["/*"],
         )
