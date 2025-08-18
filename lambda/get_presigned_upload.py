@@ -34,9 +34,15 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
     key = f"{user_id}/{document_id}.{ext}"
 
+    # Include original filename as object metadata via presigned headers
     url = s3.generate_presigned_url(
         ClientMethod="put_object",
-        Params={"Bucket": UPLOADS_BUCKET, "Key": key, "ContentType": content_type},
+        Params={
+            "Bucket": UPLOADS_BUCKET,
+            "Key": key,
+            "ContentType": content_type,
+            "Metadata": {"original-filename": filename},
+        },
         ExpiresIn=900,
     )
 
@@ -45,6 +51,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         "headers": {"Access-Control-Allow-Origin": "*"},
         "body": json.dumps({
             "uploadUrl": url,
+            "headers": {"x-amz-meta-original-filename": filename},
             "documentId": document_id,
             "extension": ext,
             "expiresIn": 900,

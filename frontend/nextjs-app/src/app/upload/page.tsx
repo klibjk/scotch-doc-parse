@@ -27,9 +27,9 @@ export default function UploadPage() {
       const uploaded: string[] = [];
       // Upload in sequence to keep UI simple; could parallelize with Promise.allSettled
       for (const f of files) {
-        const { uploadUrl, documentId } = await requestUpload(f);
+        const { uploadUrl, documentId, headers } = await requestUpload(f);
         setStatus(`Uploading ${f.name}…`);
-        const put = await fetch(uploadUrl, { method: "PUT", headers: { "Content-Type": f.type || "application/pdf" }, body: f });
+        const put = await fetch(uploadUrl, { method: "PUT", headers: { "Content-Type": f.type || "application/pdf", ...(headers || {}) }, body: f });
         if (!put.ok) throw new Error(`Upload failed for ${f.name}`);
         uploaded.push(documentId);
       }
@@ -51,7 +51,7 @@ export default function UploadPage() {
           accept="application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
           onChange={(e) => setFiles(Array.from(e.target.files || []))}
         />
-        <button type="submit" disabled={!files.length} style={{ padding: '8px 12px' }}>Upload</button>
+        <button type="submit" disabled={!files.length} style={{ padding: '8px 12px' }}>Upload Files</button>
       </form>
       <p>{status}</p>
       {documentIds.length > 0 && (
