@@ -3,9 +3,9 @@ import { useState } from "react";
 import { API_BASE } from "@/lib/config";
 
 export default function UploadPage() {
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
   const [status, setStatus] = useState<string>("");
-  const [documentId, setDocumentId] = useState<string | null>(null);
+  const [documentIds, setDocumentIds] = useState<string[]>([]);
   const [jumpUrl, setJumpUrl] = useState<string | null>(null);
 
   async function requestUpload(file: File) {
@@ -21,14 +21,20 @@ export default function UploadPage() {
 
   async function handleUpload(e: React.FormEvent) {
     e.preventDefault();
-    if (!file) return;
+    if (!files.length) return;
     try {
-      const { uploadUrl, documentId } = await requestUpload(file);
-      setStatus("Uploading to S3…");
-      const put = await fetch(uploadUrl, { method: "PUT", headers: { "Content-Type": file.type || "application/pdf" }, body: file });
-      if (!put.ok) throw new Error("Upload failed");
-      setDocumentId(documentId);
-      setJumpUrl(`/chat?doc=${encodeURIComponent(documentId)}`);
+      setStatus("Requesting presigned URLs…");
+      const uploaded: string[] = [];
+      // Upload in sequence to keep UI simple; could parallelize with Promise.allSettled
+      for (const f of files) {
+        const { uploadUrl, documentId } = await requestUpload(f);
+        setStatus(`Uploading ${f.name}…`);
+        const put = await fetch(uploadUrl, { method: "PUT", headers: { "Content-Type": f.type || "application/pdf" }, body: f });
+        if (!put.ok) throw new Error(`Upload failed for ${f.name}`);
+        uploaded.push(documentId);
+      }
+      setDocumentIds(uploaded);
+      setJumpUrl(`/chat?docs=${encodeURIComponent(uploaded.join(","))}`);
       setStatus("Uploaded ✓ — Ready to chat.");
     } catch (err: any) {
       setStatus(err.message || "Error");
@@ -37,16 +43,24 @@ export default function UploadPage() {
 
   return (
     <main style={{ padding: 24 }}>
-      <h2>Upload PDF</h2>
+      <h2>Upload Documents (PDF/XLSX)</h2>
       <form onSubmit={handleUpload} style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-        <input type="file" accept="application/pdf" onChange={(e) => setFile(e.target.files?.[0] || null)} />
-        <button type="submit" disabled={!file} style={{ padding: '8px 12px' }}>Upload</button>
+        <input
+          type="file"
+          multiple
+          accept="application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          onChange={(e) => setFiles(Array.from(e.target.files || []))}
+        />
+        <button type="submit" disabled={!files.length} style={{ padding: '8px 12px' }}>Upload</button>
       </form>
       <p>{status}</p>
-      {documentId && (
+      {documentIds.length > 0 && (
         <div>
-          <p>documentId: <code>{documentId}</code></p>
-          {jumpUrl && <a href={jumpUrl}><button style={{ padding: '8px 12px' }}>Go to Chat with this document</button></a>}
+          <p>documentIds:</p>
+          <ul>
+            {documentIds.map((id) => (<li key={id}><code>{id}</code></li>))}
+          </ul>
+          {jumpUrl && <a href={jumpUrl}><button style={{ padding: '8px 12px' }}>Go to Chat with these documents</button></a>}
         </div>
       )}
     </main>

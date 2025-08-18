@@ -20,15 +20,15 @@ async function pollTask(taskId: string) {
 
 export default function ChatPage() {
   const [prompt, setPrompt] = useState("");
-  const [documentId, setDocumentId] = useState("");
+  const [documentIds, setDocumentIds] = useState<string>("");
   const [status, setStatus] = useState("");
   const [result, setResult] = useState<any>(null);
 
   // Support /chat?doc=... to prefill the documentId
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const doc = params.get('doc');
-    if (doc) setDocumentId(doc);
+    const docs = params.get('docs') || params.get('doc');
+    if (docs) setDocumentIds(docs);
   }, []);
 
   async function handleAsk(e: React.FormEvent) {
@@ -36,7 +36,11 @@ export default function ChatPage() {
     setStatus("Starting task…");
     setResult(null);
     try {
-      const { taskId } = await startTask(prompt, documentId ? [documentId] : []);
+      const ids = documentIds
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const { taskId } = await startTask(prompt, ids);
       setStatus("Polling…");
       let tries = 0;
       while (tries < 60) {
@@ -62,7 +66,7 @@ export default function ChatPage() {
     <main style={{ padding: 24 }}>
       <h2>Chat</h2>
       <form onSubmit={handleAsk}>
-        <input value={documentId} onChange={e=>setDocumentId(e.target.value)} placeholder="documentId (optional)" />
+        <input value={documentIds} onChange={e=>setDocumentIds(e.target.value)} placeholder="documentId(s) comma-separated (optional)" />
         <br />
         <textarea value={prompt} onChange={e=>setPrompt(e.target.value)} placeholder="Ask something about your document…" rows={4} cols={60} />
         <br />
