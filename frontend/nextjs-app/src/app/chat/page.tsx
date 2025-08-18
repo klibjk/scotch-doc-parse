@@ -82,7 +82,7 @@ export default function ChatPage() {
               <h4>Sources</h4>
               <ul>
                 {result.sources.map((s:any, i:number) => (
-                  <li key={i}>doc {s.documentId}, pages: {Array.isArray(s.pages) ? s.pages.join(',') : ''}</li>
+                  <li key={i}>{s.filename || `doc ${s.documentId}`}, pages: {Array.isArray(s.pages) ? s.pages.join(',') : ''}</li>
                 ))}
               </ul>
             </div>

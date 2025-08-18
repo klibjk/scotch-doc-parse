@@ -19,9 +19,10 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
     parsed_docs = []
     sources = []
+    doc_id_to_filename: Dict[str, str] = {}
     for doc_id in document_ids:
         # Try both pdf and xlsx keys to locate the uploaded object
-        user_prefix = event.get('userId','anon')
+        user_prefix = event.get("userId", "anon")
         tried_keys = [
             f"{user_prefix}/{doc_id}.pdf",
             f"{user_prefix}/{doc_id}.xlsx",
@@ -38,17 +39,29 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         parsed: Dict[str, Any]
         if obj is not None and key_used is not None:
             data = obj["Body"].read()
-            if key_used.endswith('.pdf'):
+            if key_used.endswith(".pdf"):
                 parsed = parse_document.parse_pdf_bytes(data, filename=os.path.basename(key_used))
-            elif key_used.endswith('.xlsx'):
+            elif key_used.endswith(".xlsx"):
                 try:
-                    parsed = parse_document.parse_xlsx_bytes(data, filename=os.path.basename(key_used))
+                    parsed = parse_document.parse_xlsx_bytes(
+                        data, filename=os.path.basename(key_used)
+                    )
                 except Exception:
-                    parsed = {"docType": "xlsx", "text": "", "tables": [], "metadata": {"error": "xlsx parse failed"}}
+                    parsed = {
+                        "docType": "xlsx",
+                        "text": "",
+                        "tables": [],
+                        "metadata": {"error": "xlsx parse failed"},
+                    }
             else:
                 parsed = {"docType": "unknown", "text": "", "tables": [], "metadata": {}}
         else:
-            parsed = {"docType": "missing", "text": "", "tables": [], "metadata": {"error": "object not found"}}
+            parsed = {
+                "docType": "missing",
+                "text": "",
+                "tables": [],
+                "metadata": {"error": "object not found"},
+            }
         # Persist parsed JSON to S3 for zero-loss preservation and attach pointer
         try:
             if reports_bucket:
@@ -66,15 +79,24 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             # Non-fatal: continue without raw pointer if write fails
             pass
 
+        filename_only = os.path.basename(key_used) if key_used else ""
+        if filename_only:
+            doc_id_to_filename[doc_id] = filename_only
         parsed_docs.append({"documentId": doc_id, "parsed": parsed})
-        sources.append({"documentId": doc_id, "pages": [1]})
+        sources.append({"documentId": doc_id, "filename": filename_only, "pages": [1]})
 
     # Try vector retrieval first (if embeddings exist), fall back to raw excerpts
     reports_bucket = os.environ.get("REPORTS_BUCKET", "")
     retrieved = []
     if reports_bucket and document_ids and prompt:
         try:
-            retrieved = retrieve_top_k(prompt=prompt, user_id=event.get("userId", "anon"), document_ids=document_ids, reports_bucket=reports_bucket, top_k=5)
+            retrieved = retrieve_top_k(
+                prompt=prompt,
+                user_id=event.get("userId", "anon"),
+                document_ids=document_ids,
+                reports_bucket=reports_bucket,
+                top_k=5,
+            )
         except Exception:
             retrieved = []
 
@@ -95,7 +117,8 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         sources = []
         for r in retrieved:
             meta = r.get("metadata") or {}
-            src = {"documentId": r.get("documentId"), "pages": []}
+            doc_id_r = r.get("documentId")
+            src = {"documentId": doc_id_r, "filename": doc_id_to_filename.get(str(doc_id_r), ""), "pages": []}
             if "page" in meta and isinstance(meta["page"], int):
                 src["pages"].append(meta["page"])
             sources.append(src)
@@ -126,9 +149,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 )
                 resp = brt.converse(
                     modelId=bedrock_model_id,
-                    messages=[
-                        {"role": "user", "content": [{"text": content_text}]}
-                    ],
+                    messages=[{"role": "user", "content": [{"text": content_text}]}],
                     system=[{"text": system_inst}],
                 )
                 parts = resp.get("output", {}).get("message", {}).get("content", [])
@@ -140,10 +161,13 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             answer_text = f"Here is an excerpt based on your question: '{prompt}'.\n\n" + preview
         report_md = f"# Report\n\n## Prompt\n{prompt}\n\n## Excerpts\n\n{preview}\n"
     else:
-        joined_titles = ", ".join([
-            p["parsed"].get("metadata", {}).get("title", doc.get("documentId"))
-            for doc in parsed_docs for p in [doc]
-        ])
+        joined_titles = ", ".join(
+            [
+                p["parsed"].get("metadata", {}).get("title", doc.get("documentId"))
+                for doc in parsed_docs
+                for p in [doc]
+            ]
+        )
         answer_text = (
             f"No parsed text extracted. Parsed {len(parsed_docs)} document(s): {joined_titles}."
         )
