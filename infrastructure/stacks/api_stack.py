@@ -105,6 +105,21 @@ class ApiStack(Stack):
             environment=common_env,
         )
 
+        # Indexing ETL Lambda: parse->chunk->embed->write JSONL (reuses Reports bucket path)
+        index_etl_fn = _lambda.Function(
+            self,
+            "IndexEtlLambda",
+            runtime=_lambda.Runtime.PYTHON_3_11,
+            handler="index_etl.handler",
+            code=_lambda.Code.from_asset("lambda"),
+            timeout=Duration.seconds(120),
+            environment={
+                **common_env,
+                # Optional embeddings model; can be set post-deploy
+                "BEDROCK_EMBEDDINGS_MODEL_ID": os.environ.get("BEDROCK_EMBEDDINGS_MODEL_ID", ""),
+            },
+        )
+
         # Secrets
         from aws_cdk import aws_secretsmanager as secrets
         llama_secret = secrets.Secret.from_secret_name_v2(self, "LlamaParseSecret", "/scotch-doc-parse/llamaparse")
@@ -131,8 +146,11 @@ class ApiStack(Stack):
         uploads_bucket.grant_read_write(bedrock_agent_fn)
         uploads_bucket.grant_read_write(presign_fn)
         reports_bucket.grant_read_write(bedrock_agent_fn)
+        uploads_bucket.grant_read(index_etl_fn)
+        reports_bucket.grant_read_write(index_etl_fn)
         # Allow Lambdas to read LlamaParse secret
         llama_secret.grant_read(bedrock_agent_fn)
+        llama_secret.grant_read(index_etl_fn)
         # Allow invoking Bedrock models directly
         bedrock_agent_fn.add_to_role_policy(
             iam.PolicyStatement(
@@ -141,6 +159,15 @@ class ApiStack(Stack):
                     "bedrock:Converse",
                     "bedrock:InvokeModelWithResponseStream",
                     "bedrock:InvokeAgent",
+                ],
+                resources=["*"],
+            )
+        )
+        # Allow embeddings model for ETL
+        index_etl_fn.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "bedrock:InvokeModel",
                 ],
                 resources=["*"],
             )
