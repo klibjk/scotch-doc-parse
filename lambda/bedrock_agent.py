@@ -14,7 +14,6 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
     s3 = boto3.client("s3", config=Config(retries={"max_attempts": 3}))
     uploads_bucket = os.environ.get("UPLOADS_BUCKET", "")
-    reports_bucket = os.environ.get("REPORTS_BUCKET", "")
 
     parsed_docs = []
     sources = []
@@ -48,23 +47,6 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 parsed = {"docType": "unknown", "text": "", "tables": [], "metadata": {}}
         else:
             parsed = {"docType": "missing", "text": "", "tables": [], "metadata": {"error": "object not found"}}
-        # Persist parsed JSON to S3 for zero-loss preservation and attach pointer
-        try:
-            if reports_bucket:
-                raw_key = f"parsed/{user_prefix}/{doc_id}.json"
-                s3.put_object(
-                    Bucket=reports_bucket,
-                    Key=raw_key,
-                    Body=json.dumps(parsed).encode("utf-8"),
-                    ContentType="application/json",
-                )
-                meta = parsed.get("metadata") or {}
-                meta["rawS3Uri"] = f"s3://{reports_bucket}/{raw_key}"
-                parsed["metadata"] = meta
-        except Exception:
-            # Non-fatal: continue without raw pointer if write fails
-            pass
-
         parsed_docs.append({"documentId": doc_id, "parsed": parsed})
         sources.append({"documentId": doc_id, "pages": [1]})
 
