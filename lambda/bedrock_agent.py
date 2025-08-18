@@ -1,6 +1,7 @@
 import json
 import os
 import time
+import re
 from typing import Any, Dict, List
 import boto3
 from botocore.config import Config
@@ -11,6 +12,7 @@ from common.retrieval import retrieve_top_k
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     # Placeholder that returns a deterministic fake result for now
     prompt = event.get("prompt") if isinstance(event, dict) else None
+    mode = (event.get("mode") or "retrieval").lower()
     document_ids: List[str] = event.get("documentIds") or []
 
     s3 = boto3.client("s3", config=Config(retries={"max_attempts": 3}))
@@ -40,12 +42,17 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         if obj is not None and key_used is not None:
             data = obj["Body"].read()
             if key_used.endswith(".pdf"):
-                parsed = parse_document.parse_pdf_bytes(data, filename=os.path.basename(key_used))
+                # Prefer original filename from S3 metadata if present
+                original_filename = (obj.get("Metadata") or {}).get(
+                    "original-filename"
+                ) or os.path.basename(key_used)
+                parsed = parse_document.parse_pdf_bytes(data, filename=original_filename)
             elif key_used.endswith(".xlsx"):
                 try:
-                    parsed = parse_document.parse_xlsx_bytes(
-                        data, filename=os.path.basename(key_used)
-                    )
+                    original_filename = (obj.get("Metadata") or {}).get(
+                        "original-filename"
+                    ) or os.path.basename(key_used)
+                    parsed = parse_document.parse_xlsx_bytes(data, filename=original_filename)
                 except Exception:
                     parsed = {
                         "docType": "xlsx",
@@ -79,7 +86,9 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             # Non-fatal: continue without raw pointer if write fails
             pass
 
-        filename_only = os.path.basename(key_used) if key_used else ""
+        filename_only = (
+            (obj.get("Metadata") or {}).get("original-filename") if obj is not None else ""
+        ) or (os.path.basename(key_used) if key_used else "")
         if filename_only:
             doc_id_to_filename[doc_id] = filename_only
         parsed_docs.append({"documentId": doc_id, "parsed": parsed})
@@ -88,7 +97,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     # Try vector retrieval first (if embeddings exist), fall back to raw excerpts
     reports_bucket = os.environ.get("REPORTS_BUCKET", "")
     retrieved = []
-    if reports_bucket and document_ids and prompt:
+    if mode == "retrieval" and reports_bucket and document_ids and prompt:
         try:
             retrieved = retrieve_top_k(
                 prompt=prompt,
@@ -102,6 +111,16 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
     excerpts: list[str] = []
     if retrieved:
+        # If the prompt asks for a specific page (e.g., "page 3"), bias to that page
+        try:
+            m = re.search(r"\bpage\s+(\d+)\b", (prompt or ""), re.IGNORECASE)
+            if m:
+                page_num = int(m.group(1))
+                filt = [r for r in retrieved if (r.get("metadata") or {}).get("page") == page_num]
+                if filt:
+                    retrieved = filt
+        except Exception:
+            pass
         for r in retrieved:
             txt = r.get("text") or ""
             meta = r.get("metadata") or {}
@@ -118,7 +137,11 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         for r in retrieved:
             meta = r.get("metadata") or {}
             doc_id_r = r.get("documentId")
-            src = {"documentId": doc_id_r, "filename": doc_id_to_filename.get(str(doc_id_r), ""), "pages": []}
+            src = {
+                "documentId": doc_id_r,
+                "filename": doc_id_to_filename.get(str(doc_id_r), ""),
+                "pages": [],
+            }
             if "page" in meta and isinstance(meta["page"], int):
                 src["pages"].append(meta["page"])
             sources.append(src)
