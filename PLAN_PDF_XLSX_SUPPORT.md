@@ -7,7 +7,7 @@
 
 ### Current state (summary)
 - Uploads: Presigned S3 PUT via `POST /upload-request` with `contentType`.
-- Chat flow: `POST /agent-task` → Step Functions → `lambda/bedrock_agent.py` parses PDFs via LlamaParse, composes excerpts, and (optionally) calls Bedrock model (Sonnet 3.5) to answer.
+- Chat flow: `POST /agent-task` → Step Functions → `lambda/bedrock_agent.py` parses PDFs and XLSX via LlamaParse, composes excerpts, and (optionally) calls Bedrock model (Sonnet 3.5) to answer.
 - Agent console (`/agent`) is separate and uses Bedrock Agents runtime.
 
 ### Proposed changes
@@ -18,9 +18,9 @@
      - Return `{ documentId, extension }` so downstream knows file type (or infer later via S3 `HeadObject.ContentType`).
 
 2) Unified parsing layer
-   - Create `lambda/common/parse_document.py` with:
-     - `parse_pdf(bytes)`: use existing LlamaParse wrapper (existing `llama_parse.parse_pdf_bytes`).
-     - `parse_xlsx(bytes)`: use `pandas` (`openpyxl` engine) to extract sheets as rows; also produce a flattened text summary per sheet for LLM context.
+   - Create/maintain `lambda/common/parse_document.py` with:
+     - `parse_pdf(bytes)`: delegate to LlamaParse (`llama_parse.parse_pdf_bytes`).
+     - `parse_xlsx(bytes)`: delegate to LlamaParse (`llama_parse.parse_xlsx_bytes`).
      - Normalize to a common structure:
        ```json
        {
@@ -50,8 +50,8 @@
      - `products.xlsx`: columns e.g. `product`, `flavor`, `size_oz`, `price`, `tags` (energy/relaxation/detox), `promo_code`.
      - `orders.xlsx`: columns e.g. `order_id`, `status`, `eta`, `address`, `can_cancel` (Y/N).
      - `catalog.pdf` (optional): a brochure with ingredient lists.
-   - Unit tests (parsers):
-     - `tests/test_parse_xlsx.py`: verify `parse_xlsx` returns expected sheets/rows and a non-empty `text` summary.
+   - Unit tests (parsers via LlamaParse):
+     - `tests/test_parse_xlsx.py`: verify LlamaParse returns expected sheet/table metadata and non-empty `text` summary.
      - `tests/test_parse_pdf.py`: verify LlamaParse result shape and non-empty `text` for the fixture brochure.
    - Integration tests (end-to-end):
      - Script: upload fixtures via `POST /upload-request` + PUT; collect `documentId`s.
@@ -72,14 +72,13 @@
 
 ### Work items (incremental)
 1. Update presign to preserve extension and return it.
-2. Add `parse_document.py` and `parse_xlsx(bytes)` with `pandas[openpyxl]` dependency.
+2. Ensure `parse_document.py` delegates both PDF/XLSX to LlamaParse (`llama_parse.py`).
 3. Modify `bedrock_agent.py` to parse by extension and compose unified context.
 4. Frontend: multi-file upload + document list UI.
 5. Add fixtures and tests (unit + integration scripts).
 6. Quotas: ensure model/agent quotas meet expected test throughput.
 
 ### Dependencies
-- Python: `pandas`, `openpyxl` (add to `requirements.txt`).
-- Existing: LlamaParse secret in Secrets Manager.
+- LlamaParse API (LLamaIndex Cloud): API key configured via AWS Secrets Manager.
 
 
