@@ -67,6 +67,8 @@ class ApiStack(Stack):
             # Secrets Manager ID where the LlamaParse API key is stored
             "LLAMAPARSE_SECRET_ID": "/scotch-doc-parse/llamaparse",
             "BEDROCK_MODEL_ID": "anthropic.claude-3-5-sonnet-20240620-v1:0",
+            # Default embeddings model for retrieval/ETL; can be overridden later if needed
+            "BEDROCK_EMBEDDINGS_MODEL_ID": "amazon.titan-embed-text-v2:0",
         }
 
         start_task_fn = _lambda.Function(
@@ -114,11 +116,7 @@ class ApiStack(Stack):
             handler="index_etl.handler",
             code=_lambda.Code.from_asset("lambda"),
             timeout=Duration.seconds(120),
-            environment={
-                **common_env,
-                # Optional embeddings model; can be set post-deploy
-                "BEDROCK_EMBEDDINGS_MODEL_ID": os.environ.get("BEDROCK_EMBEDDINGS_MODEL_ID", ""),
-            },
+            environment=common_env,
         )
 
         # Secrets
