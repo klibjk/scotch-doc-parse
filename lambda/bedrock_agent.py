@@ -121,6 +121,22 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     retrieved = filt
         except Exception:
             pass
+        # Lightweight keyword filter to prefer chunks that actually contain request terms
+        try:
+            q = (prompt or "").lower()
+            key_terms = set()
+            for token in ["experience", "years", "requirement", "qualification", "responsibilit", "skills"]:
+                if token in q:
+                    key_terms.add(token)
+            if key_terms:
+                def has_terms(txt: str) -> bool:
+                    lt = txt.lower()
+                    return any(t in lt for t in key_terms) or bool(re.search(r"\b\d{1,2}\s*(?:years|yrs)\b", lt)) or bool(re.search(r"\b\d{1,2}\s*[-–]\s*\d{1,2}\b", lt))
+                filtered = [r for r in retrieved if has_terms(r.get("text") or "")]
+                if filtered:
+                    retrieved = filtered
+        except Exception:
+            pass
         for r in retrieved:
             txt = r.get("text") or ""
             meta = r.get("metadata") or {}
@@ -146,12 +162,54 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 src["pages"].append(meta["page"])
             sources.append(src)
     else:
-        # Compose an answer grounded on parsed docs: include excerpts
+        # Baseline: Build previews from parsed pages with simple relevance scoring
+        try:
+            q = (prompt or "").lower()
+            m = re.search(r"\bpage\s+(\d+)\b", q, re.IGNORECASE)
+            requested_page = int(m.group(1)) if m else None
+        except Exception:
+            requested_page = None
+
+        def page_score(page_text: str) -> int:
+            score = 0
+            lt = page_text.lower()
+            for term in ["experience", "years", "requirement", "qualification", "responsibilit", "skills"]:
+                score += lt.count(term)
+            if re.search(r"\b\d{1,2}\s*(?:years|yrs)\b", lt) or re.search(r"\b\d{1,2}\s*[-–]\s*\d{1,2}\b", lt):
+                score += 3
+            return score
+
+        selected_sources: list[Dict[str, Any]] = []
         for doc in parsed_docs:
+            doc_id = doc.get("documentId")
             parsed = doc.get("parsed", {})
-            text = parsed.get("text") or ""
-            if text:
-                excerpts.append(text.strip())
+            pages = parsed.get("pages") or []
+            filename = doc_id_to_filename.get(str(doc_id), "")
+            chosen_pages: list[int] = []
+            if requested_page:
+                for p in pages:
+                    if int(p.get("page") or p.get("pageNumber") or 0) == requested_page:
+                        chosen_pages = [requested_page]
+                        excerpts.append((p.get("text") or "").strip()[:1200])
+                        break
+            if not chosen_pages:
+                scored = []
+                for p in pages:
+                    pn = int(p.get("page") or p.get("pageNumber") or 0)
+                    txt = p.get("text") or ""
+                    scored.append((page_score(txt), pn, txt))
+                # Pick top 2 pages with score > 0, else fall back to first page
+                scored.sort(key=lambda x: x[0], reverse=True)
+                picks = [s for s in scored if s[0] > 0][:2]
+                if not picks and scored:
+                    picks = scored[:1]
+                for _, pn, txt in picks:
+                    if txt:
+                        excerpts.append(txt.strip()[:1200])
+                        chosen_pages.append(pn)
+            selected_sources.append({"documentId": doc_id, "filename": filename, "pages": chosen_pages})
+        # Replace sources only with selected pages (avoid showing all pages)
+        sources = selected_sources
 
     if excerpts:
         # Limit to a reasonable preview length
