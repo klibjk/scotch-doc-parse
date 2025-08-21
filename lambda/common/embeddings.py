@@ -9,7 +9,9 @@ from botocore.config import Config
 
 def _parse_titan_response(payload: bytes | str) -> list[list[float]]:
     try:
-        data = json.loads(payload.decode("utf-8") if isinstance(payload, (bytes, bytearray)) else payload)
+        data = json.loads(
+            payload.decode("utf-8") if isinstance(payload, (bytes, bytearray)) else payload
+        )
     except Exception:
         return []
     # Titan v2 batched: { "embeddings": [ { "embedding": [...] }, ... ] }

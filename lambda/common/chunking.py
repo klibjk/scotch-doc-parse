@@ -19,7 +19,9 @@ def _split_text_with_overlap(text: str, max_chars: int, overlap: int) -> List[st
     return chunks
 
 
-def chunk_pdf(parsed: Dict[str, Any], max_chars: int = 4000, overlap: int = 400) -> List[Dict[str, Any]]:
+def chunk_pdf(
+    parsed: Dict[str, Any], max_chars: int = 4000, overlap: int = 400
+) -> List[Dict[str, Any]]:
     """Create text-centric chunks from a parsed PDF structure.
 
     This is a character-based approximation to keep tokens under control without external tokenizers.
@@ -112,5 +114,3 @@ def chunk_xlsx(parsed: Dict[str, Any], rows_per_chunk: int = 50) -> List[Dict[st
             )
             i += rows_per_chunk
     return chunks
-
-

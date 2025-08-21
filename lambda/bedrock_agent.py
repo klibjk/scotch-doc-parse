@@ -125,13 +125,26 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         try:
             q = (prompt or "").lower()
             key_terms = set()
-            for token in ["experience", "years", "requirement", "qualification", "responsibilit", "skills"]:
+            for token in [
+                "experience",
+                "years",
+                "requirement",
+                "qualification",
+                "responsibilit",
+                "skills",
+            ]:
                 if token in q:
                     key_terms.add(token)
             if key_terms:
+
                 def has_terms(txt: str) -> bool:
                     lt = txt.lower()
-                    return any(t in lt for t in key_terms) or bool(re.search(r"\b\d{1,2}\s*(?:years|yrs)\b", lt)) or bool(re.search(r"\b\d{1,2}\s*[-–]\s*\d{1,2}\b", lt))
+                    return (
+                        any(t in lt for t in key_terms)
+                        or bool(re.search(r"\b\d{1,2}\s*(?:years|yrs)\b", lt))
+                        or bool(re.search(r"\b\d{1,2}\s*[-–]\s*\d{1,2}\b", lt))
+                    )
+
                 filtered = [r for r in retrieved if has_terms(r.get("text") or "")]
                 if filtered:
                     retrieved = filtered
@@ -173,9 +186,18 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         def page_score(page_text: str) -> int:
             score = 0
             lt = page_text.lower()
-            for term in ["experience", "years", "requirement", "qualification", "responsibilit", "skills"]:
+            for term in [
+                "experience",
+                "years",
+                "requirement",
+                "qualification",
+                "responsibilit",
+                "skills",
+            ]:
                 score += lt.count(term)
-            if re.search(r"\b\d{1,2}\s*(?:years|yrs)\b", lt) or re.search(r"\b\d{1,2}\s*[-–]\s*\d{1,2}\b", lt):
+            if re.search(r"\b\d{1,2}\s*(?:years|yrs)\b", lt) or re.search(
+                r"\b\d{1,2}\s*[-–]\s*\d{1,2}\b", lt
+            ):
                 score += 3
             return score
 
@@ -207,7 +229,9 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     if txt:
                         excerpts.append(txt.strip()[:1200])
                         chosen_pages.append(pn)
-            selected_sources.append({"documentId": doc_id, "filename": filename, "pages": chosen_pages})
+            selected_sources.append(
+                {"documentId": doc_id, "filename": filename, "pages": chosen_pages}
+            )
         # Replace sources only with selected pages (avoid showing all pages)
         sources = selected_sources
 

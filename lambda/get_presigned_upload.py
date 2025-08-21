@@ -49,11 +49,13 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     return {
         "statusCode": 200,
         "headers": {"Access-Control-Allow-Origin": "*"},
-        "body": json.dumps({
-            "uploadUrl": url,
-            "headers": {"x-amz-meta-original-filename": filename},
-            "documentId": document_id,
-            "extension": ext,
-            "expiresIn": 900,
-        }),
+        "body": json.dumps(
+            {
+                "uploadUrl": url,
+                "headers": {"x-amz-meta-original-filename": filename},
+                "documentId": document_id,
+                "extension": ext,
+                "expiresIn": 900,
+            }
+        ),
     }

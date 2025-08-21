@@ -25,7 +25,7 @@ def _cosine_similarity(a: List[float], b: List[float]) -> float:
         nb += vb * vb
     if na == 0.0 or nb == 0.0:
         return 0.0
-    return dot / ((na ** 0.5) * (nb ** 0.5))
+    return dot / ((na**0.5) * (nb**0.5))
 
 
 def retrieve_top_k(
@@ -79,5 +79,3 @@ def retrieve_top_k(
         }
         for score, r in top
     ]
-
-
