@@ -53,45 +53,24 @@ function handler(event) {
             default_behavior=cloudfront.BehaviorOptions(
                 origin=origins.S3Origin(site_bucket, origin_access_identity=oai),
                 viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-                function_associations=[cloudfront.FunctionAssociation(function=url_rewrite_fn, event_type=cloudfront.FunctionEventType.VIEWER_REQUEST)],
+                function_associations=[
+                    cloudfront.FunctionAssociation(
+                        function=url_rewrite_fn,
+                        event_type=cloudfront.FunctionEventType.VIEWER_REQUEST,
+                    )
+                ],
             ),
         )
         # Grant CloudFront OAI read access to the bucket
         site_bucket.grant_read(oai.grant_principal)
 
-        # Deploy pre-built static site from frontend/nextjs-app/out
-        # 1) Long-cache immutable assets (everything except HTML)
+        # Deploy pre-built static site from frontend/nextjs-app/out (single pass)
+        # Simpler deployment to ensure all .html (including index.html) are uploaded.
         s3deploy.BucketDeployment(
             self,
-            "DeployWebsiteAssets",
+            "DeployWebsiteAll",
             destination_bucket=site_bucket,
-            sources=[
-                s3deploy.Source.asset(
-                    "frontend/nextjs-app/out",
-                    exclude=["*.html"],
-                )
-            ],
-            cache_control=[
-                s3deploy.CacheControl.from_string("public, max-age=31536000, immutable")
-            ],
-            distribution=distribution,
-            distribution_paths=["/*"],
-        )
-
-        # 2) HTML with no-cache to avoid stale UI
-        s3deploy.BucketDeployment(
-            self,
-            "DeployWebsiteHtml",
-            destination_bucket=site_bucket,
-            sources=[
-                s3deploy.Source.asset(
-                    "frontend/nextjs-app/out",
-                    exclude=["*", "!*.html"],
-                )
-            ],
-            cache_control=[
-                s3deploy.CacheControl.from_string("no-cache, no-store, must-revalidate")
-            ],
+            sources=[s3deploy.Source.asset("frontend/nextjs-app/out")],
             distribution=distribution,
             distribution_paths=["/*"],
         )

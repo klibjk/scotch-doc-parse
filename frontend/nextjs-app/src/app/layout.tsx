@@ -3,23 +3,25 @@ export const metadata = {
   description: 'Upload PDFs and chat with AI',
 };
 
+import "./globals.css";
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body style={{ margin: 0, fontFamily: 'system-ui' }}>
-        <header style={{
-          display: 'flex', alignItems: 'center', gap: 16,
-          padding: '12px 16px', borderBottom: '1px solid #eee', position: 'sticky', top: 0, background: '#fff'
-        }}>
-          <strong>Scotch Doc-Chat</strong>
-          <nav style={{ display: 'flex', gap: 12 }}>
-            <a href="/" style={{ textDecoration: 'none' }}>Home</a>
-            <a href="/upload" style={{ textDecoration: 'none' }}>Upload</a>
-            <a href="/chat" style={{ textDecoration: 'none' }}>Chat</a>
-            <a href="/chat-basic" style={{ textDecoration: 'none' }}>Chat (Baseline)</a>
-          </nav>
+      <head />
+      <body className="bg-surface text-ink font-ui">
+        <header className="sticky top-0 z-40 bg-surface/95 backdrop-blur border-b border-neutral-200">
+          <div className="mx-auto max-w-5xl px-4 py-3 flex items-center gap-6">
+            <strong className="text-lg">Scotch Doc-Chat</strong>
+            <nav className="flex items-center gap-4 text-sm">
+              <a className="hover:underline" href="/">Home</a>
+              <a className="hover:underline" href="/upload">Upload</a>
+              <a className="hover:underline" href="/chat">Chat</a>
+              <a className="hover:underline" href="/chat-basic">Chat (Baseline)</a>
+            </nav>
+          </div>
         </header>
-        <div style={{ maxWidth: 900, margin: '0 auto' }}>
+        <div className="mx-auto max-w-5xl px-4">
           {children}
         </div>
       </body>
