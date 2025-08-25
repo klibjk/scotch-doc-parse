@@ -83,7 +83,9 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                             original_filename = (obj.get("Metadata") or {}).get(
                                 "original-filename"
                             ) or os.path.basename(key_used)
-                            parsed = parse_document.parse_xlsx_bytes(data, filename=original_filename)
+                            parsed = parse_document.parse_xlsx_bytes(
+                                data, filename=original_filename
+                            )
                         except Exception:
                             parsed = {
                                 "docType": "xlsx",
@@ -211,65 +213,23 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 src["pages"].append(meta["page"])
             sources.append(src)
     else:
-        # Baseline: Build previews from parsed pages with simple relevance scoring
-        try:
-            q = (prompt or "").lower()
-            m = re.search(r"\bpage\s+(\d+)\b", q, re.IGNORECASE)
-            requested_page = int(m.group(1)) if m else None
-        except Exception:
-            requested_page = None
-
-        def page_score(page_text: str) -> int:
-            score = 0
-            lt = page_text.lower()
-            for term in [
-                "experience",
-                "years",
-                "requirement",
-                "qualification",
-                "responsibilit",
-                "skills",
-            ]:
-                score += lt.count(term)
-            if re.search(r"\b\d{1,2}\s*(?:years|yrs)\b", lt) or re.search(
-                r"\b\d{1,2}\s*[-–]\s*\d{1,2}\b", lt
-            ):
-                score += 3
-            return score
-
-        selected_sources: list[Dict[str, Any]] = []
-        for doc in parsed_docs:
-            doc_id = doc.get("documentId")
-            parsed = doc.get("parsed", {})
-            pages = parsed.get("pages") or []
-            filename = doc_id_to_filename.get(str(doc_id), "")
-            chosen_pages: list[int] = []
-            if requested_page:
-                for p in pages:
-                    if int(p.get("page") or p.get("pageNumber") or 0) == requested_page:
-                        chosen_pages = [requested_page]
-                        excerpts.append((p.get("text") or "").strip()[:1200])
-                        break
-            if not chosen_pages:
-                scored = []
-                for p in pages:
-                    pn = int(p.get("page") or p.get("pageNumber") or 0)
-                    txt = p.get("text") or ""
-                    scored.append((page_score(txt), pn, txt))
-                # Pick top 2 pages with score > 0, else fall back to first page
-                scored.sort(key=lambda x: x[0], reverse=True)
-                picks = [s for s in scored if s[0] > 0][:2]
-                if not picks and scored:
-                    picks = scored[:1]
-                for _, pn, txt in picks:
-                    if txt:
-                        excerpts.append(txt.strip()[:1200])
-                        chosen_pages.append(pn)
-            selected_sources.append(
-                {"documentId": doc_id, "filename": filename, "pages": chosen_pages}
-            )
-        # Replace sources only with selected pages (avoid showing all pages)
-        sources = selected_sources
+        # Strict retrieval mode: if no hits, return an explicit no-evidence message
+        answer_text = (
+            "No evidence found in the provided documents for your request. "
+            "Try rephrasing the question or uploading a document that contains the answer."
+        )
+        report_md = f"# Report\n\n## Prompt\n{prompt}\n\nNo retrieval hits.\n"
+        result = {
+            "text": answer_text,
+            "sources": [],
+            "report": {"format": "markdown", "content": report_md},
+        }
+        completed_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        return {
+            "agentResult": json.dumps(result),
+            "completedAt": completed_at,
+            "sessionId": event.get("sessionId", ""),
+        }
 
     if excerpts:
         # Limit to a reasonable preview length

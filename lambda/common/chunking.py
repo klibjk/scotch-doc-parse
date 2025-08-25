@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List
+import csv
+import io
 
 
 def _split_text_with_overlap(text: str, max_chars: int, overlap: int) -> List[str]:
@@ -113,4 +115,65 @@ def chunk_xlsx(parsed: Dict[str, Any], rows_per_chunk: int = 50) -> List[Dict[st
                 }
             )
             i += rows_per_chunk
+    # If no chunks were produced from top-level tables, try page-level items
+    if not chunks:
+        pages = parsed.get("pages") or []
+        for page in pages:
+            items = page.get("items") or []
+            for it in items:
+                # Handle shapes: { type: 'table', rows|csv|name } OR { table: { rows|csv|name } }
+                table_obj = None
+                if isinstance(it, dict):
+                    if it.get("type") == "table":
+                        table_obj = it
+                    elif isinstance(it.get("table"), dict):
+                        table_obj = it.get("table")
+                if not isinstance(table_obj, dict):
+                    continue
+                sheet = table_obj.get("name") or table_obj.get("sheet") or page.get("name")
+                rows = table_obj.get("rows") or []
+                if not rows:
+                    # Try parsing CSV if provided
+                    csv_text = table_obj.get("csv") or ""
+                    if isinstance(csv_text, str) and csv_text.strip():
+                        try:
+                            reader = csv.reader(io.StringIO(csv_text))
+                            rows = [list(r) for r in reader]
+                        except Exception:
+                            rows = []
+                if not rows:
+                    # Last resort: flatten markdown text if present
+                    md_text = table_obj.get("md") or table_obj.get("text") or ""
+                    if isinstance(md_text, str) and md_text.strip():
+                        chunks.append(
+                            {
+                                "text": md_text,
+                                "metadata": {"docType": "xlsx", "title": title, "sheet": sheet},
+                            }
+                        )
+                        continue
+                # Emit row-group chunks
+                i = 0
+                while i < len(rows):
+                    group = rows[i : i + rows_per_chunk]
+                    text_lines: List[str] = []
+                    for row in group:
+                        if isinstance(row, list):
+                            text_lines.append("\t".join(str(c) for c in row))
+                        else:
+                            text_lines.append(str(row))
+                    chunk_text = "\n".join(text_lines)
+                    chunks.append(
+                        {
+                            "text": chunk_text,
+                            "metadata": {
+                                "docType": "xlsx",
+                                "title": title,
+                                "sheet": sheet,
+                                "rowStart": i + 1,
+                                "rowEnd": min(i + rows_per_chunk, len(rows)),
+                            },
+                        }
+                    )
+                    i += rows_per_chunk
     return chunks
