@@ -66,39 +66,59 @@ export default function ChatPage() {
   }
 
   return (
-    <main style={{ padding: 24 }}>
-      <h2>Chat</h2>
-      <div style={{ marginBottom: 8 }}>Mode: <strong>{mode}</strong></div>
-      <form onSubmit={handleAsk}>
-        <input value={documentIds} onChange={e => setDocumentIds(e.target.value)} placeholder="documentId(s) comma-separated (optional)" />
-        <br />
-        <textarea value={prompt} onChange={e => setPrompt(e.target.value)} placeholder="Ask something about your document…" rows={4} cols={60} />
-        <br />
-        <button type="submit" disabled={!prompt}>Ask</button>
+    <main style={{ height: 'calc(100vh - 64px)', padding: 0, display: 'grid', gridTemplateRows: 'auto 1fr auto' }}>
+      <div style={{ padding: 16, borderBottom: '1px solid #eee', display: 'flex', alignItems: 'center', gap: 12 }}>
+        <strong style={{ fontSize: 18 }}>Chat</strong>
+        <span style={{ color: '#666' }}>Mode: <strong>{mode}</strong></span>
+      </div>
+      <div style={{ overflow: 'auto', padding: 16 }}>
+        {status && <p style={{ color: '#666' }}>{status}</p>}
+        {result && (
+          <section>
+            <div style={{ marginBottom: 12 }}>
+              <pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{result.text}</pre>
+            </div>
+            {Array.isArray(result.sources) && result.sources.length > 0 && (
+              <details open>
+                <summary style={{ cursor: 'pointer' }}>Sources</summary>
+                <ul style={{ marginTop: 8 }}>
+                  {result.sources.map((s: any, i: number) => (
+                    <li key={i}>
+                      {s.filename || `doc ${s.documentId}`}
+                      {Array.isArray(s.sheets) && s.sheets.length ? ` · sheets: ${s.sheets.join(',')}` : ''}
+                      {Array.isArray(s.rows) && s.rows.length ? ` · rows: ${s.rows.join(',')}` : ''}
+                      {Array.isArray(s.pages) && s.pages.length ? ` · pages: ${s.pages.join(',')}` : ''}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+            {result.report?.content && (
+              <details style={{ marginTop: 12 }}>
+                <summary style={{ cursor: 'pointer' }}>Excerpt</summary>
+                <pre style={{ whiteSpace: 'pre-wrap' }}>{result.report.content}</pre>
+              </details>
+            )}
+          </section>
+        )}
+      </div>
+      <form onSubmit={handleAsk} style={{ padding: 12, borderTop: '1px solid #eee', display: 'flex', alignItems: 'center', gap: 8 }}>
+        <button type="button" title="Upload" onClick={() => window.location.href = '/upload'} style={{ border: '1px solid #ddd', borderRadius: 8, width: 36, height: 36 }}>+</button>
+        <input
+          value={documentIds}
+          onChange={e => setDocumentIds(e.target.value)}
+          placeholder="documentId(s) (optional)"
+          style={{ width: 240, padding: '8px 10px', border: '1px solid #ddd', borderRadius: 8 }}
+        />
+        <textarea
+          value={prompt}
+          onChange={e => setPrompt(e.target.value)}
+          placeholder="Ask anything…"
+          rows={1}
+          style={{ flex: 1, resize: 'vertical', maxHeight: 180, padding: '10px 12px', border: '1px solid #ddd', borderRadius: 8 }}
+        />
+        <button type="submit" disabled={!prompt} style={{ padding: '10px 14px' }}>Send</button>
       </form>
-      <p>{status}</p>
-      {result && (
-        <section>
-          <h3>Answer</h3>
-          <pre style={{ whiteSpace: 'pre-wrap' }}>{result.text}</pre>
-          {Array.isArray(result.sources) && result.sources.length > 0 && (
-            <div>
-              <h4>Sources</h4>
-              <ul>
-                {result.sources.map((s: any, i: number) => (
-                  <li key={i}>{s.filename || `doc ${s.documentId}`}, pages: {Array.isArray(s.pages) ? s.pages.join(',') : ''}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {result.report?.content && (
-            <div>
-              <h4>Report (Markdown)</h4>
-              <pre style={{ whiteSpace: 'pre-wrap' }}>{result.report.content}</pre>
-            </div>
-          )}
-        </section>
-      )}
     </main>
   );
 }

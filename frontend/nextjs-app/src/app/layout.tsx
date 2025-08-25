@@ -19,7 +19,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <a href="/chat-basic" style={{ textDecoration: 'none' }}>Chat (Baseline)</a>
           </nav>
         </header>
-        <div style={{ maxWidth: 900, margin: '0 auto' }}>
+        <div style={{ maxWidth: 1200, margin: '0 auto' }}>
           {children}
         </div>
       </body>
