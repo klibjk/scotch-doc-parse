@@ -2,7 +2,7 @@ import json
 import os
 import time
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 import boto3
 from botocore.config import Config
 from common import parse_document
@@ -19,6 +19,14 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     uploads_bucket = os.environ.get("UPLOADS_BUCKET", "")
     reports_bucket = os.environ.get("REPORTS_BUCKET", "")
 
+    # Simple in-memory memoization (per warm Lambda container)
+    # Keyed by (bucket, key, etag) -> parsed dict
+    global _PARSED_CACHE  # type: ignore[var-annotated]
+    try:
+        _PARSED_CACHE  # type: ignore[name-defined]
+    except NameError:
+        _PARSED_CACHE = {}  # type: ignore[assignment]
+
     parsed_docs = []
     sources = []
     doc_id_to_filename: Dict[str, str] = {}
@@ -31,37 +39,67 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         ]
         obj = None
         key_used = None
+        etag: str | None = None
         for key in tried_keys:
             try:
                 obj = s3.get_object(Bucket=uploads_bucket, Key=key)
                 key_used = key
+                etag = (obj.get("ETag") or "").strip('"') or None
                 break
             except Exception:
                 continue
-        parsed: Dict[str, Any]
+        parsed: Dict[str, Any] = {"docType": "unknown", "text": "", "tables": [], "metadata": {}}
         if obj is not None and key_used is not None:
-            data = obj["Body"].read()
-            if key_used.endswith(".pdf"):
-                # Prefer original filename from S3 metadata if present
-                original_filename = (obj.get("Metadata") or {}).get(
-                    "original-filename"
-                ) or os.path.basename(key_used)
-                parsed = parse_document.parse_pdf_bytes(data, filename=original_filename)
-            elif key_used.endswith(".xlsx"):
+            # Try S3-persisted normalized parse first (memoized artifact)
+            user_prefix = event.get("userId", "anon")
+            raw_key = f"parsed/{user_prefix}/{doc_id}.json"
+            used_cached = False
+            if reports_bucket:
                 try:
-                    original_filename = (obj.get("Metadata") or {}).get(
-                        "original-filename"
-                    ) or os.path.basename(key_used)
-                    parsed = parse_document.parse_xlsx_bytes(data, filename=original_filename)
+                    raw_obj = s3.get_object(Bucket=reports_bucket, Key=raw_key)
+                    parsed = json.loads(raw_obj["Body"].read().decode("utf-8"))
+                    used_cached = True
                 except Exception:
-                    parsed = {
-                        "docType": "xlsx",
-                        "text": "",
-                        "tables": [],
-                        "metadata": {"error": "xlsx parse failed"},
-                    }
-            else:
-                parsed = {"docType": "unknown", "text": "", "tables": [], "metadata": {}}
+                    used_cached = False
+            if not used_cached:
+                # In-memory LRU-style cache by (bucket,key,etag)
+                cache_key: Tuple[str, str, str] | None = (
+                    uploads_bucket,
+                    key_used,
+                    etag or "",
+                )
+                if cache_key and cache_key in _PARSED_CACHE:  # type: ignore[index]
+                    parsed = _PARSED_CACHE[cache_key]  # type: ignore[index]
+                    used_cached = True
+                else:
+                    data = obj["Body"].read()
+                    if key_used.endswith(".pdf"):
+                        original_filename = (obj.get("Metadata") or {}).get(
+                            "original-filename"
+                        ) or os.path.basename(key_used)
+                        parsed = parse_document.parse_pdf_bytes(data, filename=original_filename)
+                    elif key_used.endswith(".xlsx"):
+                        try:
+                            original_filename = (obj.get("Metadata") or {}).get(
+                                "original-filename"
+                            ) or os.path.basename(key_used)
+                            parsed = parse_document.parse_xlsx_bytes(
+                                data, filename=original_filename
+                            )
+                        except Exception:
+                            parsed = {
+                                "docType": "xlsx",
+                                "text": "",
+                                "tables": [],
+                                "metadata": {"error": "xlsx parse failed"},
+                            }
+                    else:
+                        parsed = {"docType": "unknown", "text": "", "tables": [], "metadata": {}}
+                    if cache_key:
+                        # Bounded cache: keep at most ~32 entries
+                        if len(_PARSED_CACHE) > 32:  # type: ignore[arg-type]
+                            _PARSED_CACHE.clear()  # type: ignore[call-arg]
+                        _PARSED_CACHE[cache_key] = parsed  # type: ignore[index]
         else:
             parsed = {
                 "docType": "missing",
@@ -150,6 +188,9 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     retrieved = filtered
         except Exception:
             pass
+        # Focus excerpts around query terms to avoid truncation issues
+        q_lower = (prompt or "").lower()
+        q_terms = [t for t in re.findall(r"[a-zA-Z][a-zA-Z0-9_-]{2,}", q_lower)]
         for r in retrieved:
             txt = r.get("text") or ""
             meta = r.get("metadata") or {}
@@ -159,85 +200,78 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             if "sheet" in meta:
                 cite.append(f"sheet {meta['sheet']}")
             cite_suffix = f" ({' ,'.join(cite)})" if cite else ""
-            if txt:
-                excerpts.append((txt.strip() + cite_suffix)[:1200])
-        # Build sources from retrieved hits
-        sources = []
+            if not txt:
+                continue
+            lt = txt.lower()
+            # Find first occurrence of any query term
+            hit_idx = -1
+            for term in sorted(q_terms, key=len, reverse=True):
+                hit_idx = lt.find(term)
+                if hit_idx != -1:
+                    break
+            if hit_idx == -1:
+                # Fallback to head of chunk
+                slice_text = txt.strip()[:1200]
+            else:
+                span = 600
+                start = max(0, hit_idx - span // 2)
+                end = min(len(txt), hit_idx + span // 2)
+                slice_text = txt[start:end].strip()
+            excerpts.append(slice_text + cite_suffix)
+        # Build de-duplicated sources per document, aggregating page/sheet/row when available
+        agg: Dict[str, Dict[str, Any]] = {}
         for r in retrieved:
             meta = r.get("metadata") or {}
-            doc_id_r = r.get("documentId")
+            doc_id_r = str(r.get("documentId"))
+            entry = agg.setdefault(
+                doc_id_r,
+                {
+                    "documentId": doc_id_r,
+                    "filename": doc_id_to_filename.get(str(doc_id_r), ""),
+                    "pages": set(),
+                    "rows": set(),
+                    "sheets": set(),
+                },
+            )
+            if isinstance(meta.get("page"), int):
+                entry["pages"].add(int(meta["page"]))
+            if isinstance(meta.get("row"), int):
+                entry["rows"].add(int(meta["row"]))
+            if meta.get("sheet"):
+                entry["sheets"].add(str(meta["sheet"]))
+        # Convert sets to sorted lists
+        sources = []
+        for e in agg.values():
             src = {
-                "documentId": doc_id_r,
-                "filename": doc_id_to_filename.get(str(doc_id_r), ""),
-                "pages": [],
+                "documentId": e["documentId"],
+                "filename": e["filename"],
+                "pages": sorted(list(e["pages"])) if e["pages"] else [],
+                "rows": sorted(list(e["rows"])) if e["rows"] else [],
+                "sheets": sorted(list(e["sheets"])) if e["sheets"] else [],
             }
-            if "page" in meta and isinstance(meta["page"], int):
-                src["pages"].append(meta["page"])
             sources.append(src)
     else:
-        # Baseline: Build previews from parsed pages with simple relevance scoring
-        try:
-            q = (prompt or "").lower()
-            m = re.search(r"\bpage\s+(\d+)\b", q, re.IGNORECASE)
-            requested_page = int(m.group(1)) if m else None
-        except Exception:
-            requested_page = None
-
-        def page_score(page_text: str) -> int:
-            score = 0
-            lt = page_text.lower()
-            for term in [
-                "experience",
-                "years",
-                "requirement",
-                "qualification",
-                "responsibilit",
-                "skills",
-            ]:
-                score += lt.count(term)
-            if re.search(r"\b\d{1,2}\s*(?:years|yrs)\b", lt) or re.search(
-                r"\b\d{1,2}\s*[-–]\s*\d{1,2}\b", lt
-            ):
-                score += 3
-            return score
-
-        selected_sources: list[Dict[str, Any]] = []
-        for doc in parsed_docs:
-            doc_id = doc.get("documentId")
-            parsed = doc.get("parsed", {})
-            pages = parsed.get("pages") or []
-            filename = doc_id_to_filename.get(str(doc_id), "")
-            chosen_pages: list[int] = []
-            if requested_page:
-                for p in pages:
-                    if int(p.get("page") or p.get("pageNumber") or 0) == requested_page:
-                        chosen_pages = [requested_page]
-                        excerpts.append((p.get("text") or "").strip()[:1200])
-                        break
-            if not chosen_pages:
-                scored = []
-                for p in pages:
-                    pn = int(p.get("page") or p.get("pageNumber") or 0)
-                    txt = p.get("text") or ""
-                    scored.append((page_score(txt), pn, txt))
-                # Pick top 2 pages with score > 0, else fall back to first page
-                scored.sort(key=lambda x: x[0], reverse=True)
-                picks = [s for s in scored if s[0] > 0][:2]
-                if not picks and scored:
-                    picks = scored[:1]
-                for _, pn, txt in picks:
-                    if txt:
-                        excerpts.append(txt.strip()[:1200])
-                        chosen_pages.append(pn)
-            selected_sources.append(
-                {"documentId": doc_id, "filename": filename, "pages": chosen_pages}
-            )
-        # Replace sources only with selected pages (avoid showing all pages)
-        sources = selected_sources
+        # Strict retrieval mode: if no hits, return an explicit no-evidence message
+        answer_text = (
+            "No evidence found in the provided documents for your request. "
+            "Try rephrasing the question or uploading a document that contains the answer."
+        )
+        report_md = f"# Report\n\n## Prompt\n{prompt}\n\nNo retrieval hits.\n"
+        result = {
+            "text": answer_text,
+            "sources": [],
+            "report": {"format": "markdown", "content": report_md},
+        }
+        completed_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        return {
+            "agentResult": json.dumps(result),
+            "completedAt": completed_at,
+            "sessionId": event.get("sessionId", ""),
+        }
 
     if excerpts:
-        # Limit to a reasonable preview length
-        preview = ("\n\n---\n\n").join(excerpts)[:2000]
+        # Limit to a reasonable preview length (use the most relevant slice only)
+        preview = (excerpts[0] if excerpts else "")[:2000]
         # Call Bedrock Runtime directly with prompt + parsed context. Then fallback to excerpts.
         answer_text = None
         bedrock_model_id = os.environ.get("BEDROCK_MODEL_ID")
@@ -245,8 +279,9 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             try:
                 brt = boto3.client("bedrock-runtime", config=Config(retries={"max_attempts": 3}))
                 system_inst = (
-                    "You are a document analysis assistant. Answer the user's question using ONLY the provided parsed content. "
-                    "Be concise and include a short Sources section with documentId and page numbers if possible."
+                    "You are a document analysis assistant. Answer ONLY with the facts needed to answer the user's question. "
+                    "Do not add disclaimers or statements about missing details. Do not include a Sources section in your text. "
+                    "Be concise and use bullet points when listing items."
                 )
                 content_text = (
                     f"Question: {prompt}\n\n"
