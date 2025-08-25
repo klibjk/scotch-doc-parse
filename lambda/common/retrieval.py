@@ -68,6 +68,34 @@ def retrieve_top_k(
 
     if not candidates:
         return []
+    # If all embedding scores are ~0, apply lexical scoring fallback (still strict retrieval)
+    max_score = max(s for s, _ in candidates)
+    if max_score <= 1e-9:
+        q = (prompt or "").lower()
+        # basic tokenization
+        terms = [t for t in q.replace("?", " ").replace(",", " ").split() if len(t) > 2]
+        def lex_score(txt: str) -> int:
+            lt = (txt or "").lower()
+            return sum(lt.count(t) for t in terms)
+        lex_scored = []
+        for _, rec in candidates:
+            s = lex_score(rec.get("text") or "")
+            lex_scored.append((s, rec))
+        # filter to those with at least one hit
+        lex_scored = [x for x in lex_scored if x[0] > 0]
+        if lex_scored:
+            lex_scored.sort(key=lambda x: x[0], reverse=True)
+            top = lex_scored[:top_k]
+            return [
+                {
+                    "documentId": r.get("documentId"),
+                    "text": r.get("text") or "",
+                    "metadata": r.get("metadata") or {},
+                    "score": s,
+                }
+                for s, r in top
+            ]
+        # If still nothing, fall through to return arbitrary top_k by cosine (all zeros)
     candidates.sort(key=lambda x: x[0], reverse=True)
     top = candidates[:top_k]
     return [
