@@ -47,10 +47,9 @@ def embed_texts(texts: List[str]) -> List[List[float]]:
 
     brt = boto3.client("bedrock-runtime", config=Config(retries={"max_attempts": 3}))
     vectors: List[List[float]] = []
-    batch_size = 16
-    for i in range(0, len(texts), batch_size):
-        batch = texts[i : i + batch_size]
-        body = json.dumps({"inputText": batch}).encode("utf-8")
+    for text in texts:
+        body = json.dumps({"inputText": text}).encode("utf-8")
+        vec: List[float] | None = None
         try:
             resp = brt.invoke_model(
                 modelId=model_id,
@@ -61,20 +60,13 @@ def embed_texts(texts: List[str]) -> List[List[float]]:
             stream = resp.get("body")
             payload = stream.read() if hasattr(stream, "read") else stream
             parsed = _parse_titan_response(payload)
-            if parsed:
-                vectors.extend(parsed)
-                continue
+            if parsed and isinstance(parsed, list) and parsed[0]:
+                vec = parsed[0]
         except Exception:
-            pass
-        # On failure or empty parse, append zeros for the batch
-        vectors.extend([[0.0] * 8 for _ in batch])
+            vec = None
+        vectors.append(vec if vec else [0.0] * 8)
 
-    # Ensure 1:1 result length
-    if len(vectors) != len(texts):
-        # Pad or truncate conservatively
-        if len(vectors) < len(texts):
-            pad_len = len(texts) - len(vectors)
-            vectors.extend([[0.0] * (len(vectors[0]) if vectors else 8) for _ in range(pad_len)])
-        else:
-            vectors = vectors[: len(texts)]
+    # Ensure 1:1 and at least some dimensionality
+    if not vectors:
+        return [[0.0] * 8 for _ in texts]
     return vectors
