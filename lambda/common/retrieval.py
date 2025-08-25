@@ -71,6 +71,7 @@ def retrieve_top_k(
     # Prefer rows whose Topic matches product/entity terms in the question
     q = (prompt or "").lower()
     q_terms = [t for t in q.replace("?", " ").replace(",", " ").split() if len(t) > 2]
+
     def topic_of(rec: Dict[str, Any]) -> str:
         meta = rec.get("metadata") or {}
         cols = meta.get("columns") or {}
@@ -80,6 +81,7 @@ def retrieve_top_k(
                 if str(k).strip().lower() == "topic":
                     return str(v or "").lower()
         return ""
+
     filtered: List[Tuple[float, Dict[str, Any]]] = []
     for s, r in candidates:
         top = topic_of(r)
