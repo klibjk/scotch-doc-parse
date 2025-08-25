@@ -2,11 +2,11 @@
 import { useState, useEffect } from "react";
 import { API_BASE } from "@/lib/config";
 
-async function startTask(prompt: string, documentIds: string[]) {
+async function startTask(prompt: string, documentIds: string[], mode: 'retrieval' | 'baseline') {
   const res = await fetch(`${API_BASE}/agent-task`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt, documentIds, userId: "demo" })
+    body: JSON.stringify({ prompt, documentIds, userId: "demo", mode })
   });
   if (!res.ok) throw new Error("Failed to start task");
   return res.json();
@@ -23,12 +23,15 @@ export default function ChatPage() {
   const [documentIds, setDocumentIds] = useState<string>("");
   const [status, setStatus] = useState("");
   const [result, setResult] = useState<any>(null);
+  const [mode, setMode] = useState<'retrieval' | 'baseline'>('retrieval');
 
-  // Support /chat?doc=... to prefill the documentId
+  // Support /chat?doc=... and /chat?mode=baseline
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const docs = params.get('docs') || params.get('doc');
     if (docs) setDocumentIds(docs);
+    const m = (params.get('mode') || '').toLowerCase();
+    if (m === 'baseline') setMode('baseline');
   }, []);
 
   async function handleAsk(e: React.FormEvent) {
@@ -40,7 +43,7 @@ export default function ChatPage() {
         .split(',')
         .map((s) => s.trim())
         .filter(Boolean);
-      const { taskId } = await startTask(prompt, ids);
+      const { taskId } = await startTask(prompt, ids, mode);
       setStatus("Polling…");
       let tries = 0;
       while (tries < 60) {
@@ -65,10 +68,11 @@ export default function ChatPage() {
   return (
     <main style={{ padding: 24 }}>
       <h2>Chat</h2>
+      <div style={{ marginBottom: 8 }}>Mode: <strong>{mode}</strong></div>
       <form onSubmit={handleAsk}>
-        <input value={documentIds} onChange={e=>setDocumentIds(e.target.value)} placeholder="documentId(s) comma-separated (optional)" />
+        <input value={documentIds} onChange={e => setDocumentIds(e.target.value)} placeholder="documentId(s) comma-separated (optional)" />
         <br />
-        <textarea value={prompt} onChange={e=>setPrompt(e.target.value)} placeholder="Ask something about your document…" rows={4} cols={60} />
+        <textarea value={prompt} onChange={e => setPrompt(e.target.value)} placeholder="Ask something about your document…" rows={4} cols={60} />
         <br />
         <button type="submit" disabled={!prompt}>Ask</button>
       </form>
@@ -76,13 +80,13 @@ export default function ChatPage() {
       {result && (
         <section>
           <h3>Answer</h3>
-          <pre style={{whiteSpace:'pre-wrap'}}>{result.text}</pre>
+          <pre style={{ whiteSpace: 'pre-wrap' }}>{result.text}</pre>
           {Array.isArray(result.sources) && result.sources.length > 0 && (
             <div>
               <h4>Sources</h4>
               <ul>
-                {result.sources.map((s:any, i:number) => (
-                  <li key={i}>doc {s.documentId}, pages: {Array.isArray(s.pages) ? s.pages.join(',') : ''}</li>
+                {result.sources.map((s: any, i: number) => (
+                  <li key={i}>{s.filename || `doc ${s.documentId}`}, pages: {Array.isArray(s.pages) ? s.pages.join(',') : ''}</li>
                 ))}
               </ul>
             </div>
@@ -90,7 +94,7 @@ export default function ChatPage() {
           {result.report?.content && (
             <div>
               <h4>Report (Markdown)</h4>
-              <pre style={{whiteSpace:'pre-wrap'}}>{result.report.content}</pre>
+              <pre style={{ whiteSpace: 'pre-wrap' }}>{result.report.content}</pre>
             </div>
           )}
         </section>

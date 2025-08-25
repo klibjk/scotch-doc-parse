@@ -1,15 +1,18 @@
 import json
 import os
 import time
+import re
 from typing import Any, Dict, List
 import boto3
 from botocore.config import Config
 from common import parse_document
+from common.retrieval import retrieve_top_k
 
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     # Placeholder that returns a deterministic fake result for now
     prompt = event.get("prompt") if isinstance(event, dict) else None
+    mode = (event.get("mode") or "retrieval").lower()
     document_ids: List[str] = event.get("documentIds") or []
 
     s3 = boto3.client("s3", config=Config(retries={"max_attempts": 3}))
@@ -18,9 +21,10 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
     parsed_docs = []
     sources = []
+    doc_id_to_filename: Dict[str, str] = {}
     for doc_id in document_ids:
         # Try both pdf and xlsx keys to locate the uploaded object
-        user_prefix = event.get('userId','anon')
+        user_prefix = event.get("userId", "anon")
         tried_keys = [
             f"{user_prefix}/{doc_id}.pdf",
             f"{user_prefix}/{doc_id}.xlsx",
@@ -37,17 +41,34 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         parsed: Dict[str, Any]
         if obj is not None and key_used is not None:
             data = obj["Body"].read()
-            if key_used.endswith('.pdf'):
-                parsed = parse_document.parse_pdf_bytes(data, filename=os.path.basename(key_used))
-            elif key_used.endswith('.xlsx'):
+            if key_used.endswith(".pdf"):
+                # Prefer original filename from S3 metadata if present
+                original_filename = (obj.get("Metadata") or {}).get(
+                    "original-filename"
+                ) or os.path.basename(key_used)
+                parsed = parse_document.parse_pdf_bytes(data, filename=original_filename)
+            elif key_used.endswith(".xlsx"):
                 try:
-                    parsed = parse_document.parse_xlsx_bytes(data, filename=os.path.basename(key_used))
+                    original_filename = (obj.get("Metadata") or {}).get(
+                        "original-filename"
+                    ) or os.path.basename(key_used)
+                    parsed = parse_document.parse_xlsx_bytes(data, filename=original_filename)
                 except Exception:
-                    parsed = {"docType": "xlsx", "text": "", "tables": [], "metadata": {"error": "xlsx parse failed"}}
+                    parsed = {
+                        "docType": "xlsx",
+                        "text": "",
+                        "tables": [],
+                        "metadata": {"error": "xlsx parse failed"},
+                    }
             else:
                 parsed = {"docType": "unknown", "text": "", "tables": [], "metadata": {}}
         else:
-            parsed = {"docType": "missing", "text": "", "tables": [], "metadata": {"error": "object not found"}}
+            parsed = {
+                "docType": "missing",
+                "text": "",
+                "tables": [],
+                "metadata": {"error": "object not found"},
+            }
         # Persist parsed JSON to S3 for zero-loss preservation and attach pointer
         try:
             if reports_bucket:
@@ -65,16 +86,154 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             # Non-fatal: continue without raw pointer if write fails
             pass
 
+        filename_only = (
+            (obj.get("Metadata") or {}).get("original-filename") if obj is not None else ""
+        ) or (os.path.basename(key_used) if key_used else "")
+        if filename_only:
+            doc_id_to_filename[doc_id] = filename_only
         parsed_docs.append({"documentId": doc_id, "parsed": parsed})
-        sources.append({"documentId": doc_id, "pages": [1]})
+        sources.append({"documentId": doc_id, "filename": filename_only, "pages": [1]})
 
-    # Compose an answer grounded on parsed docs: include excerpts
-    excerpts = []
-    for doc in parsed_docs:
-        parsed = doc.get("parsed", {})
-        text = parsed.get("text") or ""
-        if text:
-            excerpts.append(text.strip())
+    # Try vector retrieval first (if embeddings exist), fall back to raw excerpts
+    reports_bucket = os.environ.get("REPORTS_BUCKET", "")
+    retrieved = []
+    if mode == "retrieval" and reports_bucket and document_ids and prompt:
+        try:
+            retrieved = retrieve_top_k(
+                prompt=prompt,
+                user_id=event.get("userId", "anon"),
+                document_ids=document_ids,
+                reports_bucket=reports_bucket,
+                top_k=5,
+            )
+        except Exception:
+            retrieved = []
+
+    excerpts: list[str] = []
+    if retrieved:
+        # If the prompt asks for a specific page (e.g., "page 3"), bias to that page
+        try:
+            m = re.search(r"\bpage\s+(\d+)\b", (prompt or ""), re.IGNORECASE)
+            if m:
+                page_num = int(m.group(1))
+                filt = [r for r in retrieved if (r.get("metadata") or {}).get("page") == page_num]
+                if filt:
+                    retrieved = filt
+        except Exception:
+            pass
+        # Lightweight keyword filter to prefer chunks that actually contain request terms
+        try:
+            q = (prompt or "").lower()
+            key_terms = set()
+            for token in [
+                "experience",
+                "years",
+                "requirement",
+                "qualification",
+                "responsibilit",
+                "skills",
+            ]:
+                if token in q:
+                    key_terms.add(token)
+            if key_terms:
+
+                def has_terms(txt: str) -> bool:
+                    lt = txt.lower()
+                    return (
+                        any(t in lt for t in key_terms)
+                        or bool(re.search(r"\b\d{1,2}\s*(?:years|yrs)\b", lt))
+                        or bool(re.search(r"\b\d{1,2}\s*[-–]\s*\d{1,2}\b", lt))
+                    )
+
+                filtered = [r for r in retrieved if has_terms(r.get("text") or "")]
+                if filtered:
+                    retrieved = filtered
+        except Exception:
+            pass
+        for r in retrieved:
+            txt = r.get("text") or ""
+            meta = r.get("metadata") or {}
+            cite = []
+            if "page" in meta:
+                cite.append(f"p.{meta['page']}")
+            if "sheet" in meta:
+                cite.append(f"sheet {meta['sheet']}")
+            cite_suffix = f" ({' ,'.join(cite)})" if cite else ""
+            if txt:
+                excerpts.append((txt.strip() + cite_suffix)[:1200])
+        # Build sources from retrieved hits
+        sources = []
+        for r in retrieved:
+            meta = r.get("metadata") or {}
+            doc_id_r = r.get("documentId")
+            src = {
+                "documentId": doc_id_r,
+                "filename": doc_id_to_filename.get(str(doc_id_r), ""),
+                "pages": [],
+            }
+            if "page" in meta and isinstance(meta["page"], int):
+                src["pages"].append(meta["page"])
+            sources.append(src)
+    else:
+        # Baseline: Build previews from parsed pages with simple relevance scoring
+        try:
+            q = (prompt or "").lower()
+            m = re.search(r"\bpage\s+(\d+)\b", q, re.IGNORECASE)
+            requested_page = int(m.group(1)) if m else None
+        except Exception:
+            requested_page = None
+
+        def page_score(page_text: str) -> int:
+            score = 0
+            lt = page_text.lower()
+            for term in [
+                "experience",
+                "years",
+                "requirement",
+                "qualification",
+                "responsibilit",
+                "skills",
+            ]:
+                score += lt.count(term)
+            if re.search(r"\b\d{1,2}\s*(?:years|yrs)\b", lt) or re.search(
+                r"\b\d{1,2}\s*[-–]\s*\d{1,2}\b", lt
+            ):
+                score += 3
+            return score
+
+        selected_sources: list[Dict[str, Any]] = []
+        for doc in parsed_docs:
+            doc_id = doc.get("documentId")
+            parsed = doc.get("parsed", {})
+            pages = parsed.get("pages") or []
+            filename = doc_id_to_filename.get(str(doc_id), "")
+            chosen_pages: list[int] = []
+            if requested_page:
+                for p in pages:
+                    if int(p.get("page") or p.get("pageNumber") or 0) == requested_page:
+                        chosen_pages = [requested_page]
+                        excerpts.append((p.get("text") or "").strip()[:1200])
+                        break
+            if not chosen_pages:
+                scored = []
+                for p in pages:
+                    pn = int(p.get("page") or p.get("pageNumber") or 0)
+                    txt = p.get("text") or ""
+                    scored.append((page_score(txt), pn, txt))
+                # Pick top 2 pages with score > 0, else fall back to first page
+                scored.sort(key=lambda x: x[0], reverse=True)
+                picks = [s for s in scored if s[0] > 0][:2]
+                if not picks and scored:
+                    picks = scored[:1]
+                for _, pn, txt in picks:
+                    if txt:
+                        excerpts.append(txt.strip()[:1200])
+                        chosen_pages.append(pn)
+            selected_sources.append(
+                {"documentId": doc_id, "filename": filename, "pages": chosen_pages}
+            )
+        # Replace sources only with selected pages (avoid showing all pages)
+        sources = selected_sources
 
     if excerpts:
         # Limit to a reasonable preview length
@@ -95,9 +254,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 )
                 resp = brt.converse(
                     modelId=bedrock_model_id,
-                    messages=[
-                        {"role": "user", "content": [{"text": content_text}]}
-                    ],
+                    messages=[{"role": "user", "content": [{"text": content_text}]}],
                     system=[{"text": system_inst}],
                 )
                 parts = resp.get("output", {}).get("message", {}).get("content", [])
@@ -109,10 +266,13 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             answer_text = f"Here is an excerpt based on your question: '{prompt}'.\n\n" + preview
         report_md = f"# Report\n\n## Prompt\n{prompt}\n\n## Excerpts\n\n{preview}\n"
     else:
-        joined_titles = ", ".join([
-            p["parsed"].get("metadata", {}).get("title", doc.get("documentId"))
-            for doc in parsed_docs for p in [doc]
-        ])
+        joined_titles = ", ".join(
+            [
+                p["parsed"].get("metadata", {}).get("title", doc.get("documentId"))
+                for doc in parsed_docs
+                for p in [doc]
+            ]
+        )
         answer_text = (
             f"No parsed text extracted. Parsed {len(parsed_docs)} document(s): {joined_titles}."
         )

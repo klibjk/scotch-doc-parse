@@ -14,6 +14,7 @@ from aws_cdk import (
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_bedrock as bedrock
 from aws_cdk import aws_s3_deployment as s3deploy
+from aws_cdk import aws_s3_notifications as s3n
 from pathlib import Path
 from constructs import Construct
 
@@ -66,6 +67,8 @@ class ApiStack(Stack):
             # Secrets Manager ID where the LlamaParse API key is stored
             "LLAMAPARSE_SECRET_ID": "/scotch-doc-parse/llamaparse",
             "BEDROCK_MODEL_ID": "anthropic.claude-3-5-sonnet-20240620-v1:0",
+            # Default embeddings model for retrieval/ETL; can be overridden later if needed
+            "BEDROCK_EMBEDDINGS_MODEL_ID": "amazon.titan-embed-text-v2:0",
         }
 
         start_task_fn = _lambda.Function(
@@ -105,9 +108,23 @@ class ApiStack(Stack):
             environment=common_env,
         )
 
+        # Indexing ETL Lambda: parse->chunk->embed->write JSONL (reuses Reports bucket path)
+        index_etl_fn = _lambda.Function(
+            self,
+            "IndexEtlLambda",
+            runtime=_lambda.Runtime.PYTHON_3_11,
+            handler="index_etl.handler",
+            code=_lambda.Code.from_asset("lambda"),
+            timeout=Duration.seconds(120),
+            environment=common_env,
+        )
+
         # Secrets
         from aws_cdk import aws_secretsmanager as secrets
-        llama_secret = secrets.Secret.from_secret_name_v2(self, "LlamaParseSecret", "/scotch-doc-parse/llamaparse")
+
+        llama_secret = secrets.Secret.from_secret_name_v2(
+            self, "LlamaParseSecret", "/scotch-doc-parse/llamaparse"
+        )
 
         # Action Group Lambda for Bedrock Agent (parse_pdf)
         agent_tools_env = dict(common_env)
@@ -131,8 +148,11 @@ class ApiStack(Stack):
         uploads_bucket.grant_read_write(bedrock_agent_fn)
         uploads_bucket.grant_read_write(presign_fn)
         reports_bucket.grant_read_write(bedrock_agent_fn)
+        uploads_bucket.grant_read(index_etl_fn)
+        reports_bucket.grant_read_write(index_etl_fn)
         # Allow Lambdas to read LlamaParse secret
         llama_secret.grant_read(bedrock_agent_fn)
+        llama_secret.grant_read(index_etl_fn)
         # Allow invoking Bedrock models directly
         bedrock_agent_fn.add_to_role_policy(
             iam.PolicyStatement(
@@ -144,6 +164,27 @@ class ApiStack(Stack):
                 ],
                 resources=["*"],
             )
+        )
+        # Allow embeddings model for ETL
+        index_etl_fn.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "bedrock:InvokeModel",
+                ],
+                resources=["*"],
+            )
+        )
+
+        # S3 event notifications to kick off indexing when a new object is uploaded
+        uploads_bucket.add_event_notification(
+            s3.EventType.OBJECT_CREATED,
+            s3n.LambdaDestination(index_etl_fn),
+            s3.NotificationKeyFilter(suffix=".pdf"),
+        )
+        uploads_bucket.add_event_notification(
+            s3.EventType.OBJECT_CREATED,
+            s3n.LambdaDestination(index_etl_fn),
+            s3.NotificationKeyFilter(suffix=".xlsx"),
         )
 
         # Step Functions state machine (skeleton)
@@ -159,7 +200,9 @@ class ApiStack(Stack):
             self,
             "UpdateResult",
             table=tasks_table,
-            key={"taskId": tasks.DynamoAttributeValue.from_string(sfn.JsonPath.string_at("$.taskId"))},
+            key={
+                "taskId": tasks.DynamoAttributeValue.from_string(sfn.JsonPath.string_at("$.taskId"))
+            },
             update_expression="SET #status = :c, #result = :r, #completedAt = :t, #sessionId = :s",
             expression_attribute_names={
                 "#status": "status",
@@ -169,21 +212,31 @@ class ApiStack(Stack):
             },
             expression_attribute_values={
                 ":c": tasks.DynamoAttributeValue.from_string("COMPLETED"),
-                ":r": tasks.DynamoAttributeValue.from_string(sfn.JsonPath.string_at("$.agent.agentResult")),
-                ":t": tasks.DynamoAttributeValue.from_string(sfn.JsonPath.string_at("$.agent.completedAt")),
-                ":s": tasks.DynamoAttributeValue.from_string(sfn.JsonPath.string_at("$.agent.sessionId")),
+                ":r": tasks.DynamoAttributeValue.from_string(
+                    sfn.JsonPath.string_at("$.agent.agentResult")
+                ),
+                ":t": tasks.DynamoAttributeValue.from_string(
+                    sfn.JsonPath.string_at("$.agent.completedAt")
+                ),
+                ":s": tasks.DynamoAttributeValue.from_string(
+                    sfn.JsonPath.string_at("$.agent.sessionId")
+                ),
             },
         )
         handle_error = tasks.DynamoUpdateItem(
             self,
             "HandleError",
             table=tasks_table,
-            key={"taskId": tasks.DynamoAttributeValue.from_string(sfn.JsonPath.string_at("$.taskId"))},
+            key={
+                "taskId": tasks.DynamoAttributeValue.from_string(sfn.JsonPath.string_at("$.taskId"))
+            },
             update_expression="SET #status = :f, #error = :e",
             expression_attribute_names={"#status": "status", "#error": "error"},
             expression_attribute_values={
                 ":f": tasks.DynamoAttributeValue.from_string("FAILED"),
-                ":e": tasks.DynamoAttributeValue.from_string(sfn.JsonPath.string_at("$.errorMessage")),
+                ":e": tasks.DynamoAttributeValue.from_string(
+                    sfn.JsonPath.string_at("$.errorMessage")
+                ),
             },
         )
 
@@ -208,7 +261,7 @@ class ApiStack(Stack):
             default_cors_preflight_options=apigw.CorsOptions(
                 allow_origins=apigw.Cors.ALL_ORIGINS,
                 allow_methods=apigw.Cors.ALL_METHODS,
-                allow_headers=["*"]
+                allow_headers=["*"],
             ),
         )
 
@@ -237,7 +290,7 @@ class ApiStack(Stack):
         parse_tool_fn.add_permission(
             "AllowBedrockInvokeTool",
             principal=iam.ServicePrincipal("bedrock.amazonaws.com"),
-            action="lambda:InvokeFunction"
+            action="lambda:InvokeFunction",
         )
 
         # Load OpenAPI schema payload for inline embedding (works even if S3 schema location type is unavailable)
@@ -249,7 +302,9 @@ class ApiStack(Stack):
             "DocAgentRole",
             assumed_by=iam.ServicePrincipal("bedrock.amazonaws.com"),
             description="Execution role for Bedrock Agent",
-            managed_policies=[iam.ManagedPolicy.from_aws_managed_policy_name("service-role/AWSLambdaRole")],
+            managed_policies=[
+                iam.ManagedPolicy.from_aws_managed_policy_name("service-role/AWSLambdaRole")
+            ],
         )
         # Allow Agent to read schema from S3
         reports_bucket.grant_read(agent_role)

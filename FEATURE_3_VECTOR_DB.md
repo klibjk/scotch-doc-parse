@@ -10,7 +10,7 @@ Retrieve only the most relevant passages/rows per question to improve accuracy, 
 - Metadata per chunk
   - `documentId`, `filename`, `docType`, `page|sheet`, `rowStart|rowEnd`, `userId`, timestamp.
 - Embeddings + store
-  - Use a vector store (e.g., OpenSearch Serverless or pgvector/FAISS) to store embeddings and metadata.
+  - Use a vector store (pgvector/FAISS) to store embeddings and metadata.
 - Query time
   - Encode question, retrieve top-k (3–8) chunks with a score threshold.
   - Compose prompt context: concise `text` plus a small JSON/table snippet and citations.

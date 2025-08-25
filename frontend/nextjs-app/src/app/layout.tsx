@@ -16,6 +16,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <a href="/" style={{ textDecoration: 'none' }}>Home</a>
             <a href="/upload" style={{ textDecoration: 'none' }}>Upload</a>
             <a href="/chat" style={{ textDecoration: 'none' }}>Chat</a>
+            <a href="/chat-basic" style={{ textDecoration: 'none' }}>Chat (Baseline)</a>
           </nav>
         </header>
         <div style={{ maxWidth: 900, margin: '0 auto' }}>
