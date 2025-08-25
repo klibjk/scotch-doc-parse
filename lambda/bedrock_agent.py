@@ -218,18 +218,37 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 end = min(len(txt), hit_idx + span // 2)
                 slice_text = txt[start:end].strip()
             excerpts.append(slice_text + cite_suffix)
-        # Build sources from retrieved hits
-        sources = []
+        # Build de-duplicated sources per document, aggregating page/sheet/row when available
+        agg: Dict[str, Dict[str, Any]] = {}
         for r in retrieved:
             meta = r.get("metadata") or {}
-            doc_id_r = r.get("documentId")
+            doc_id_r = str(r.get("documentId"))
+            entry = agg.setdefault(
+                doc_id_r,
+                {
+                    "documentId": doc_id_r,
+                    "filename": doc_id_to_filename.get(str(doc_id_r), ""),
+                    "pages": set(),
+                    "rows": set(),
+                    "sheets": set(),
+                },
+            )
+            if isinstance(meta.get("page"), int):
+                entry["pages"].add(int(meta["page"]))
+            if isinstance(meta.get("row"), int):
+                entry["rows"].add(int(meta["row"]))
+            if meta.get("sheet"):
+                entry["sheets"].add(str(meta["sheet"]))
+        # Convert sets to sorted lists
+        sources = []
+        for e in agg.values():
             src = {
-                "documentId": doc_id_r,
-                "filename": doc_id_to_filename.get(str(doc_id_r), ""),
-                "pages": [],
+                "documentId": e["documentId"],
+                "filename": e["filename"],
+                "pages": sorted(list(e["pages"])) if e["pages"] else [],
+                "rows": sorted(list(e["rows"])) if e["rows"] else [],
+                "sheets": sorted(list(e["sheets"])) if e["sheets"] else [],
             }
-            if "page" in meta and isinstance(meta["page"], int):
-                src["pages"].append(meta["page"])
             sources.append(src)
     else:
         # Strict retrieval mode: if no hits, return an explicit no-evidence message
@@ -251,8 +270,8 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         }
 
     if excerpts:
-        # Limit to a reasonable preview length
-        preview = ("\n\n---\n\n").join(excerpts)[:2000]
+        # Limit to a reasonable preview length (use the most relevant slice only)
+        preview = (excerpts[0] if excerpts else "")[:2000]
         # Call Bedrock Runtime directly with prompt + parsed context. Then fallback to excerpts.
         answer_text = None
         bedrock_model_id = os.environ.get("BEDROCK_MODEL_ID")
@@ -260,8 +279,9 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             try:
                 brt = boto3.client("bedrock-runtime", config=Config(retries={"max_attempts": 3}))
                 system_inst = (
-                    "You are a document analysis assistant. Answer the user's question using ONLY the provided parsed content. "
-                    "Be concise and include a short Sources section with documentId and page numbers if possible."
+                    "You are a document analysis assistant. Answer ONLY with the facts needed to answer the user's question. "
+                    "Do not add disclaimers or statements about missing details. Do not include a Sources section in your text. "
+                    "Be concise and use bullet points when listing items."
                 )
                 content_text = (
                     f"Question: {prompt}\n\n"
