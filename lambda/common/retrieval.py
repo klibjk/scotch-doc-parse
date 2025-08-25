@@ -68,15 +68,37 @@ def retrieve_top_k(
 
     if not candidates:
         return []
+    # Prefer rows whose Topic matches product/entity terms in the question
+    q = (prompt or "").lower()
+    q_terms = [t for t in q.replace("?", " ").replace(",", " ").split() if len(t) > 2]
+    def topic_of(rec: Dict[str, Any]) -> str:
+        meta = rec.get("metadata") or {}
+        cols = meta.get("columns") or {}
+        if isinstance(cols, dict):
+            # try 'Topic' key case-insensitively
+            for k, v in cols.items():
+                if str(k).strip().lower() == "topic":
+                    return str(v or "").lower()
+        return ""
+    filtered: List[Tuple[float, Dict[str, Any]]] = []
+    for s, r in candidates:
+        top = topic_of(r)
+        if top and any(term in top for term in q_terms):
+            filtered.append((s, r))
+    # Only apply filter if it yields results
+    if filtered:
+        candidates = filtered
     # If all embedding scores are ~0, apply lexical scoring fallback (still strict retrieval)
     max_score = max(s for s, _ in candidates)
     if max_score <= 1e-9:
         q = (prompt or "").lower()
         # basic tokenization
         terms = [t for t in q.replace("?", " ").replace(",", " ").split() if len(t) > 2]
+
         def lex_score(txt: str) -> int:
             lt = (txt or "").lower()
             return sum(lt.count(t) for t in terms)
+
         lex_scored = []
         for _, rec in candidates:
             s = lex_score(rec.get("text") or "")
