@@ -18,14 +18,32 @@ async function pollTask(taskId: string) {
   return res.json();
 }
 
+type ChatRole = 'user' | 'assistant';
+type ChatMessage = {
+  id: string;
+  role: ChatRole;
+  content: string;
+  // Optional details for assistant messages
+  meta?: any;
+  // For user messages
+  collapsed?: boolean;
+  canCollapse?: boolean;
+};
+
+function generateId() {
+  return `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
 export default function ChatPage() {
   const [prompt, setPrompt] = useState("");
   const [documentIds, setDocumentIds] = useState<string>("");
   const [status, setStatus] = useState("");
-  const [result, setResult] = useState<any>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [mode, setMode] = useState<'retrieval' | 'baseline'>('retrieval');
   const textRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const composingRef = useRef<boolean>(false);
 
   // Support /chat?doc=... and /chat?mode=baseline
   useEffect(() => {
@@ -36,23 +54,45 @@ export default function ChatPage() {
     if (m === 'baseline') setMode('baseline');
   }, []);
 
-  async function handleAsk(e: React.FormEvent) {
-    e.preventDefault();
+  async function askFromUI() {
+    if (!prompt.trim()) return;
     setStatus("Starting task…");
-    setResult(null);
+    const currentPrompt = prompt;
+    // Optimistic user bubble
+    const newUserMsg: ChatMessage = {
+      id: generateId(),
+      role: 'user',
+      content: currentPrompt,
+      canCollapse: (currentPrompt?.length || 0) > 180,
+      collapsed: (currentPrompt?.length || 0) > 180,
+    };
+    setMessages(prev => [...prev, newUserMsg]);
+    // Clear input
+    setPrompt("");
+    if (textRef.current) textRef.current.style.height = 'auto';
     try {
       const ids = documentIds
         .split(',')
         .map((s) => s.trim())
         .filter(Boolean);
-      const { taskId } = await startTask(prompt, ids, mode);
-      setStatus("Polling…");
+      const { taskId } = await startTask(currentPrompt, ids, mode);
+      setStatus("Thinking…");
       let tries = 0;
       while (tries < 60) {
         const data = await pollTask(taskId);
         if (data.status === "COMPLETED") {
-          setResult(data.result ? JSON.parse(data.result) : null);
-          setStatus("Done");
+          const parsed = data.result ? JSON.parse(data.result) : null;
+          const assistantMsg: ChatMessage = {
+            id: generateId(),
+            role: 'assistant',
+            content: parsed?.text || '',
+            meta: {
+              sources: parsed?.sources || [],
+              report: parsed?.report || null,
+            },
+          };
+          setMessages(prev => [...prev, assistantMsg]);
+          setStatus("");
           break;
         }
         if (data.status === "FAILED") {
@@ -65,6 +105,11 @@ export default function ChatPage() {
     } catch (e: any) {
       setStatus(e.message || "Error");
     }
+  }
+
+  async function handleAsk(e: React.FormEvent) {
+    e.preventDefault();
+    await askFromUI();
   }
 
   // Auto-resize the textarea up to a max height, then allow scrolling
@@ -122,42 +167,83 @@ export default function ChatPage() {
     }
   }
 
+  // Toggle expand/collapse for a user message
+  function toggleMessage(id: string) {
+    setMessages(prev => prev.map(m => m.id === id ? { ...m, collapsed: !m.collapsed } : m));
+  }
+
+  // Auto-scroll to bottom when messages change
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
+    }
+  }, [messages]);
+
+  const clampStyle: React.CSSProperties = {
+    display: '-webkit-box',
+    WebkitLineClamp: 3 as any,
+    WebkitBoxOrient: 'vertical' as any,
+    overflow: 'hidden',
+  };
+
   return (
     <main className="h-[calc(100vh-64px)] grid grid-rows-[auto,1fr,auto]">
       <div className="px-4 py-3 border-b border-neutral-200 flex items-center gap-3">
         <strong className="text-lg">Chat</strong>
         <span className="text-neutral-600">Mode: <strong>{mode}</strong></span>
       </div>
-      <div className="overflow-auto p-4">
-        {status && <p className="text-neutral-600">{status}</p>}
-        {result && (
-          <section>
-            <div className="mb-3">
-              <pre className="whitespace-pre-wrap m-0">{result.text}</pre>
-            </div>
-            {Array.isArray(result.sources) && result.sources.length > 0 && (
-              <details open>
-                <summary className="cursor-pointer">Sources</summary>
-                <ul className="mt-2 list-disc pl-5">
-                  {result.sources.map((s: any, i: number) => (
-                    <li key={i}>
-                      {s.filename || `doc ${s.documentId}`}
-                      {Array.isArray(s.sheets) && s.sheets.length ? ` · sheets: ${s.sheets.join(',')}` : ''}
-                      {Array.isArray(s.rows) && s.rows.length ? ` · rows: ${s.rows.join(',')}` : ''}
-                      {Array.isArray(s.pages) && s.pages.length ? ` · pages: ${s.pages.join(',')}` : ''}
-                    </li>
-                  ))}
-                </ul>
-              </details>
-            )}
-            {result.report?.content && (
-              <details className="mt-3">
-                <summary className="cursor-pointer">Excerpt</summary>
-                <pre className="whitespace-pre-wrap">{result.report.content}</pre>
-              </details>
-            )}
-          </section>
-        )}
+      <div ref={scrollRef} className="overflow-auto p-4">
+        {status && <p className="text-neutral-600 mb-3">{status}</p>}
+        <div className="flex flex-col gap-3">
+          {messages.map((m) => {
+            const isUser = m.role === 'user';
+            return (
+              <div key={m.id} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+                <div className={`relative max-w-[75%] rounded-xl border border-neutral-300 bg-white/80 px-3 py-2 ${isUser ? 'ml-10' : 'mr-10'}`}>
+                  <pre
+                    className="whitespace-pre-wrap m-0"
+                    style={isUser && m.collapsed ? clampStyle : undefined}
+                  >{m.content}</pre>
+                  {isUser && m.canCollapse && (
+                    <button
+                      type="button"
+                      aria-label={m.collapsed ? 'Expand message' : 'Collapse message'}
+                      onClick={() => toggleMessage(m.id)}
+                      className="absolute right-2 -bottom-2 translate-y-full text-xs text-neutral-600 hover:underline"
+                    >
+                      {m.collapsed ? 'Expand' : 'Collapse'}
+                    </button>
+                  )}
+                  {!isUser && m.meta && (
+                    <div className="mt-3">
+                      {Array.isArray(m.meta.sources) && m.meta.sources.length > 0 && (
+                        <details>
+                          <summary className="cursor-pointer">Sources</summary>
+                          <ul className="mt-2 list-disc pl-5">
+                            {m.meta.sources.map((s: any, i: number) => (
+                              <li key={i}>
+                                {s.filename || `doc ${s.documentId}`}
+                                {Array.isArray(s.sheets) && s.sheets.length ? ` · sheets: ${s.sheets.join(',')}` : ''}
+                                {Array.isArray(s.rows) && s.rows.length ? ` · rows: ${s.rows.join(',')}` : ''}
+                                {Array.isArray(s.pages) && s.pages.length ? ` · pages: ${s.pages.join(',')}` : ''}
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
+                      )}
+                      {m.meta.report?.content && (
+                        <details className="mt-2">
+                          <summary className="cursor-pointer">Excerpt</summary>
+                          <pre className="whitespace-pre-wrap">{m.meta.report.content}</pre>
+                        </details>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
       <form onSubmit={handleAsk} className="p-3 border-t border-neutral-200 flex items-end gap-2 bg-surface">
         <input
@@ -181,6 +267,17 @@ export default function ChatPage() {
           onChange={e => {
             setPrompt(e.target.value);
             autoResizeTextArea(e.target);
+          }}
+          onCompositionStart={() => { composingRef.current = true; }}
+          onCompositionEnd={() => { composingRef.current = false; }}
+          onKeyDown={async (e) => {
+            if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+              if (composingRef.current) return;
+              if (prompt.trim().length > 0) {
+                e.preventDefault();
+                await askFromUI();
+              }
+            }
           }}
           placeholder="Ask anything…"
           rows={1}
