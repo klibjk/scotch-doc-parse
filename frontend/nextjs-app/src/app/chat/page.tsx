@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { API_BASE } from "@/lib/config";
 
 async function startTask(prompt: string, documentIds: string[], mode: 'retrieval' | 'baseline') {
@@ -24,6 +24,8 @@ export default function ChatPage() {
   const [status, setStatus] = useState("");
   const [result, setResult] = useState<any>(null);
   const [mode, setMode] = useState<'retrieval' | 'baseline'>('retrieval');
+  const textRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Support /chat?doc=... and /chat?mode=baseline
   useEffect(() => {
@@ -65,23 +67,78 @@ export default function ChatPage() {
     }
   }
 
+  // Auto-resize the textarea up to a max height, then allow scrolling
+  function autoResizeTextArea(el: HTMLTextAreaElement) {
+    const max = 220; // px
+    el.style.height = 'auto';
+    const next = Math.min(max, el.scrollHeight);
+    el.style.height = `${next}px`;
+  }
+
+  // Upload helpers (mirror /upload page behavior)
+  async function requestUpload(file: File) {
+    const res = await fetch(`${API_BASE}/upload-request`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: file.name, contentType: file.type || "application/pdf", userId: "demo" }),
+    });
+    if (!res.ok) throw new Error("Failed to get presigned URL");
+    return res.json();
+  }
+
+  async function handleChooseFilesClick() {
+    fileInputRef.current?.click();
+  }
+
+  async function handleFilesSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    try {
+      setStatus("Uploading…");
+      const uploaded: string[] = [];
+      for (const f of files) {
+        const { uploadUrl, documentId, headers } = await requestUpload(f);
+        const put = await fetch(uploadUrl, {
+          method: "PUT",
+          headers: { "Content-Type": f.type || "application/pdf", ...(headers || {}) },
+          body: f,
+        });
+        if (!put.ok) throw new Error(`Upload failed for ${f.name}`);
+        uploaded.push(documentId);
+      }
+      // Merge new IDs with any existing ones in the field
+      const existing = documentIds
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const merged = [...existing, ...uploaded];
+      setDocumentIds(merged.join(','));
+      setStatus("Uploaded ✓");
+    } catch (err: any) {
+      setStatus(err.message || "Upload error");
+    } finally {
+      // reset input so selecting the same file again still triggers change
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  }
+
   return (
-    <main style={{ height: 'calc(100vh - 64px)', padding: 0, display: 'grid', gridTemplateRows: 'auto 1fr auto' }}>
-      <div style={{ padding: 16, borderBottom: '1px solid #eee', display: 'flex', alignItems: 'center', gap: 12 }}>
-        <strong style={{ fontSize: 18 }}>Chat</strong>
-        <span style={{ color: '#666' }}>Mode: <strong>{mode}</strong></span>
+    <main className="h-[calc(100vh-64px)] grid grid-rows-[auto,1fr,auto]">
+      <div className="px-4 py-3 border-b border-neutral-200 flex items-center gap-3">
+        <strong className="text-lg">Chat</strong>
+        <span className="text-neutral-600">Mode: <strong>{mode}</strong></span>
       </div>
-      <div style={{ overflow: 'auto', padding: 16 }}>
-        {status && <p style={{ color: '#666' }}>{status}</p>}
+      <div className="overflow-auto p-4">
+        {status && <p className="text-neutral-600">{status}</p>}
         {result && (
           <section>
-            <div style={{ marginBottom: 12 }}>
-              <pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{result.text}</pre>
+            <div className="mb-3">
+              <pre className="whitespace-pre-wrap m-0">{result.text}</pre>
             </div>
             {Array.isArray(result.sources) && result.sources.length > 0 && (
               <details open>
-                <summary style={{ cursor: 'pointer' }}>Sources</summary>
-                <ul style={{ marginTop: 8 }}>
+                <summary className="cursor-pointer">Sources</summary>
+                <ul className="mt-2 list-disc pl-5">
                   {result.sources.map((s: any, i: number) => (
                     <li key={i}>
                       {s.filename || `doc ${s.documentId}`}
@@ -94,30 +151,42 @@ export default function ChatPage() {
               </details>
             )}
             {result.report?.content && (
-              <details style={{ marginTop: 12 }}>
-                <summary style={{ cursor: 'pointer' }}>Excerpt</summary>
-                <pre style={{ whiteSpace: 'pre-wrap' }}>{result.report.content}</pre>
+              <details className="mt-3">
+                <summary className="cursor-pointer">Excerpt</summary>
+                <pre className="whitespace-pre-wrap">{result.report.content}</pre>
               </details>
             )}
           </section>
         )}
       </div>
-      <form onSubmit={handleAsk} style={{ padding: 12, borderTop: '1px solid #eee', display: 'flex', alignItems: 'center', gap: 8 }}>
-        <button type="button" title="Upload" onClick={() => window.location.href = '/upload'} style={{ border: '1px solid #ddd', borderRadius: 8, width: 36, height: 36 }}>+</button>
+      <form onSubmit={handleAsk} className="p-3 border-t border-neutral-200 flex items-end gap-2 bg-surface">
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          accept="application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          onChange={handleFilesSelected}
+        />
+        <button type="button" title="Upload" onClick={handleChooseFilesClick} className="w-9 h-9 rounded-xl border border-neutral-300 hover:bg-white/60">+</button>
         <input
           value={documentIds}
           onChange={e => setDocumentIds(e.target.value)}
           placeholder="documentId(s) (optional)"
-          style={{ width: 240, padding: '8px 10px', border: '1px solid #ddd', borderRadius: 8 }}
+          className="w-60 px-2.5 py-2 rounded-xl border border-neutral-300"
         />
         <textarea
           value={prompt}
-          onChange={e => setPrompt(e.target.value)}
+          ref={textRef}
+          onChange={e => {
+            setPrompt(e.target.value);
+            autoResizeTextArea(e.target);
+          }}
           placeholder="Ask anything…"
           rows={1}
-          style={{ flex: 1, resize: 'vertical', maxHeight: 180, padding: '10px 12px', border: '1px solid #ddd', borderRadius: 8 }}
+          className="flex-1 resize-none max-h-56 overflow-y-auto px-3 py-2 rounded-xl border border-neutral-300"
         />
-        <button type="submit" disabled={!prompt} style={{ padding: '10px 14px' }}>Send</button>
+        <button type="submit" disabled={!prompt} className="px-3 py-2 rounded-xl border border-neutral-300 hover:bg-white/60 disabled:opacity-50">Send</button>
       </form>
     </main>
   );
