@@ -188,6 +188,9 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     retrieved = filtered
         except Exception:
             pass
+        # Focus excerpts around query terms to avoid truncation issues
+        q_lower = (prompt or "").lower()
+        q_terms = [t for t in re.findall(r"[a-zA-Z][a-zA-Z0-9_-]{2,}", q_lower)]
         for r in retrieved:
             txt = r.get("text") or ""
             meta = r.get("metadata") or {}
@@ -197,8 +200,24 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             if "sheet" in meta:
                 cite.append(f"sheet {meta['sheet']}")
             cite_suffix = f" ({' ,'.join(cite)})" if cite else ""
-            if txt:
-                excerpts.append((txt.strip() + cite_suffix)[:1200])
+            if not txt:
+                continue
+            lt = txt.lower()
+            # Find first occurrence of any query term
+            hit_idx = -1
+            for term in sorted(q_terms, key=len, reverse=True):
+                hit_idx = lt.find(term)
+                if hit_idx != -1:
+                    break
+            if hit_idx == -1:
+                # Fallback to head of chunk
+                slice_text = txt.strip()[:1200]
+            else:
+                span = 600
+                start = max(0, hit_idx - span // 2)
+                end = min(len(txt), hit_idx + span // 2)
+                slice_text = txt[start:end].strip()
+            excerpts.append(slice_text + cite_suffix)
         # Build sources from retrieved hits
         sources = []
         for r in retrieved:
