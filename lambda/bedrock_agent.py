@@ -2,7 +2,7 @@ import json
 import os
 import time
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 import boto3
 from botocore.config import Config
 from common import parse_document
@@ -19,6 +19,14 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     uploads_bucket = os.environ.get("UPLOADS_BUCKET", "")
     reports_bucket = os.environ.get("REPORTS_BUCKET", "")
 
+    # Simple in-memory memoization (per warm Lambda container)
+    # Keyed by (bucket, key, etag) -> parsed dict
+    global _PARSED_CACHE  # type: ignore[var-annotated]
+    try:
+        _PARSED_CACHE  # type: ignore[name-defined]
+    except NameError:
+        _PARSED_CACHE = {}  # type: ignore[assignment]
+
     parsed_docs = []
     sources = []
     doc_id_to_filename: Dict[str, str] = {}
@@ -31,37 +39,65 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         ]
         obj = None
         key_used = None
+        etag: str | None = None
         for key in tried_keys:
             try:
                 obj = s3.get_object(Bucket=uploads_bucket, Key=key)
                 key_used = key
+                etag = (obj.get("ETag") or "").strip('"') or None
                 break
             except Exception:
                 continue
-        parsed: Dict[str, Any]
+        parsed: Dict[str, Any] = {"docType": "unknown", "text": "", "tables": [], "metadata": {}}
         if obj is not None and key_used is not None:
-            data = obj["Body"].read()
-            if key_used.endswith(".pdf"):
-                # Prefer original filename from S3 metadata if present
-                original_filename = (obj.get("Metadata") or {}).get(
-                    "original-filename"
-                ) or os.path.basename(key_used)
-                parsed = parse_document.parse_pdf_bytes(data, filename=original_filename)
-            elif key_used.endswith(".xlsx"):
+            # Try S3-persisted normalized parse first (memoized artifact)
+            user_prefix = event.get("userId", "anon")
+            raw_key = f"parsed/{user_prefix}/{doc_id}.json"
+            used_cached = False
+            if reports_bucket:
                 try:
-                    original_filename = (obj.get("Metadata") or {}).get(
-                        "original-filename"
-                    ) or os.path.basename(key_used)
-                    parsed = parse_document.parse_xlsx_bytes(data, filename=original_filename)
+                    raw_obj = s3.get_object(Bucket=reports_bucket, Key=raw_key)
+                    parsed = json.loads(raw_obj["Body"].read().decode("utf-8"))
+                    used_cached = True
                 except Exception:
-                    parsed = {
-                        "docType": "xlsx",
-                        "text": "",
-                        "tables": [],
-                        "metadata": {"error": "xlsx parse failed"},
-                    }
-            else:
-                parsed = {"docType": "unknown", "text": "", "tables": [], "metadata": {}}
+                    used_cached = False
+            if not used_cached:
+                # In-memory LRU-style cache by (bucket,key,etag)
+                cache_key: Tuple[str, str, str] | None = (
+                    uploads_bucket,
+                    key_used,
+                    etag or "",
+                )
+                if cache_key and cache_key in _PARSED_CACHE:  # type: ignore[index]
+                    parsed = _PARSED_CACHE[cache_key]  # type: ignore[index]
+                    used_cached = True
+                else:
+                    data = obj["Body"].read()
+                    if key_used.endswith(".pdf"):
+                        original_filename = (obj.get("Metadata") or {}).get(
+                            "original-filename"
+                        ) or os.path.basename(key_used)
+                        parsed = parse_document.parse_pdf_bytes(data, filename=original_filename)
+                    elif key_used.endswith(".xlsx"):
+                        try:
+                            original_filename = (obj.get("Metadata") or {}).get(
+                                "original-filename"
+                            ) or os.path.basename(key_used)
+                            parsed = parse_document.parse_xlsx_bytes(data, filename=original_filename)
+                        except Exception:
+                            parsed = {
+                                "docType": "xlsx",
+                                "text": "",
+                                "tables": [],
+                                "metadata": {"error": "xlsx parse failed"},
+                            }
+                    else:
+                        parsed = {"docType": "unknown", "text": "", "tables": [], "metadata": {}}
+                    if cache_key:
+                        # Bounded cache: keep at most ~32 entries
+                        if len(_PARSED_CACHE) > 32:  # type: ignore[arg-type]
+                            _PARSED_CACHE.clear()  # type: ignore[call-arg]
+                        _PARSED_CACHE[cache_key] = parsed  # type: ignore[index]
         else:
             parsed = {
                 "docType": "missing",

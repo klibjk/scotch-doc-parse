@@ -76,6 +76,19 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         parsed = parse_document.parse_xlsx_bytes(data, filename=os.path.basename(key_used))
         chunks = chunking.chunk_xlsx(parsed)
 
+    # Persist normalized parsed JSON for memoization/zero-loss
+    try:
+        if index_bucket:
+            raw_key = f"parsed/{user_id}/{document_id}.json"
+            s3.put_object(
+                Bucket=index_bucket,
+                Key=raw_key,
+                Body=json.dumps(parsed).encode("utf-8"),
+                ContentType="application/json",
+            )
+    except Exception:
+        pass
+
     texts = [c.get("text") or "" for c in chunks]
     vectors = embed_texts(texts)
 
@@ -97,6 +110,11 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     return {
         "statusCode": 200,
         "body": json.dumps(
-            {"message": "indexed", "s3": f"s3://{index_bucket}/{out_key}", "chunks": len(chunks)}
+            {
+                "message": "indexed",
+                "embeddings": f"s3://{index_bucket}/{out_key}",
+                "parsed": f"s3://{index_bucket}/parsed/{user_id}/{document_id}.json",
+                "chunks": len(chunks),
+            }
         ),
     }
